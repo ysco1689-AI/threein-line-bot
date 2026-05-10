@@ -1,6 +1,8 @@
+import os
+
 from flask import Flask, request
 
-from linebot.v3.webhook import WebhookHandler
+from linebot.v3 import WebhookHandler
 from linebot.v3.messaging import (
     Configuration,
     ApiClient,
@@ -9,14 +11,19 @@ from linebot.v3.messaging import (
     TextMessage
 )
 
-from linebot.v3.webhooks import MessageEvent, TextMessageContent
+from linebot.v3.webhooks import (
+    MessageEvent,
+    TextMessageContent
+)
 
 app = Flask(__name__)
 
 CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
 CHANNEL_SECRET = os.getenv("CHANNEL_SECRET")
 
-configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
+configuration = Configuration(
+    access_token=CHANNEL_ACCESS_TOKEN
+)
 
 handler = WebhookHandler(CHANNEL_SECRET)
 
@@ -36,8 +43,6 @@ def handle_message(event):
 
     user_message = event.message.text
 
-    reply_text = f"三入好棧 AI收到：{user_message}"
-
     with ApiClient(configuration) as api_client:
 
         line_bot_api = MessagingApi(api_client)
@@ -46,7 +51,9 @@ def handle_message(event):
             ReplyMessageRequest(
                 reply_token=event.reply_token,
                 messages=[
-                    TextMessage(text=reply_text)
+                    TextMessage(
+                        text=f"三入好棧 AI收到：{user_message}"
+                    )
                 ]
             )
         )
