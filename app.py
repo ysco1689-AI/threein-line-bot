@@ -1,7 +1,11 @@
 import os
+import json
 import google.generativeai as genai
+import gspread
 
+from google.oauth2.service_account import Credentials
 from flask import Flask, request
+
 from linebot.v3 import WebhookHandler
 from linebot.v3.messaging import (
     Configuration,
@@ -21,11 +25,45 @@ CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
 CHANNEL_SECRET = os.getenv("CHANNEL_SECRET")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
+
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-2.5-flash")
 
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
+
+
+def get_sheet_records():
+    scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+
+    service_account_info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+
+    credentials = Credentials.from_service_account_info(
+        service_account_info,
+        scopes=scopes
+    )
+
+    gc = gspread.authorize(credentials)
+
+    # 預設讀第一個工作表
+    sheet = gc.open_by_key(SPREADSHEET_ID).sheet1
+
+    return sheet.get_all_records()
+
+
+def find_recipe(user_message):
+    records = get_sheet_records()
+
+    for row in records:
+        product_name = str(row.get("品項", "")).strip()
+
+        if product_name and product_name in user_message:
+            return row
+
+    return None
+
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -34,21 +72,41 @@ def callback():
     handler.handle(body, signature)
     return "OK"
 
+
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     user_message = event.message.text
 
-    prompt = f"""
+    recipe = find_recipe(user_message)
+
+    if recipe:
+        recipe_text = "\n".join(
+            [f"{key}：{value}" for key, value in recipe.items() if value]
+        )
+
+        prompt = f"""
 你是「三入好棧 AI 員工助手」。
 
 請用繁體中文回答。
 回答要簡單、現場可執行、不要太長。
-你主要協助夜市攤位員工處理：
-1. 開攤與撤攤問題
-2. 飲料製作問題
-3. 仙草、茶湯、糖度、冰量問題
-4. 客訴應對
-5. 設備與現場突發狀況
+你只能根據以下配方資料回答，不可以自行編造。
+
+配方資料：
+{recipe_text}
+
+員工問題：
+{user_message}
+"""
+    else:
+        prompt = f"""
+你是「三入好棧 AI 員工助手」。
+
+請用繁體中文回答。
+回答要簡單、現場可執行、不要太長。
+
+目前配方表查不到這個品項。
+請回答：
+目前資料庫沒有此品項資料，請詢問總部。
 
 員工問題：
 {user_message}
@@ -65,6 +123,7 @@ def handle_message(event):
                 messages=[TextMessage(text=reply_text)]
             )
         )
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
