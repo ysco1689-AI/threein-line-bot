@@ -58,6 +58,12 @@ def get_users_records():
     return sheet.get_all_records()
 
 
+def get_qa_records():
+    gc = get_google_client()
+    sheet = gc.open_by_key(SPREADSHEET_ID).worksheet("qa")
+    return sheet.get_all_records()
+
+
 def get_user_role(user_id):
     users = get_users_records()
 
@@ -122,6 +128,46 @@ def find_recipe(user_message):
     return matched_rows[0]
 
 
+def find_qa_answer(user_message, role, status):
+    records = get_qa_records()
+
+    for row in records:
+        keywords = str(row.get("keywords", "")).split(",")
+        answer = str(row.get("answer", "")).strip()
+        permission = str(row.get("permission", "")).strip()
+
+        matched = any(
+            keyword.strip() and keyword.strip() in user_message
+            for keyword in keywords
+        )
+
+        if matched:
+            if permission == "public":
+                return answer
+
+            if permission == "franchisee":
+                if status == "active" and role in ["admin", "franchisee", "staff"]:
+                    return answer
+                return "此問題需要加盟主或員工權限，請洽總部。"
+
+            if permission == "admin":
+                if status == "active" and role == "admin":
+                    return answer
+                return "此問題需要總部權限，請洽總部。"
+
+    return None
+
+
+def is_sensitive_question(user_message):
+    sensitive_keywords = [
+        "配方", "比例", "成本", "毛利", "原物料",
+        "仙草汁", "黑糖", "二砂", "冬瓜糖", "甘草", "海鹽",
+        "茶包", "煮法", "熬煮", "幾克", "幾公克", "多少克"
+    ]
+
+    return any(word in user_message for word in sensitive_keywords)
+
+
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers["X-Line-Signature"]
@@ -149,15 +195,16 @@ def handle_message(event):
         reply_to_line(event, "此帳號目前無法使用本系統，請洽總部。")
         return
 
+    allowed_recipe_roles = ["admin", "franchisee", "staff"]
+
+    # 1. 先查配方
     recipe = find_recipe(user_message)
 
-allowed_recipe_roles = ["admin", "franchisee", "staff"]
-
-if recipe and (status != "active" or role not in allowed_recipe_roles):
-    reply_to_line(event, "此帳號目前沒有查詢配方權限，請洽總部確認。")
-    return
-
     if recipe:
+        if status != "active" or role not in allowed_recipe_roles:
+            reply_to_line(event, "此帳號目前沒有查詢配方權限，請洽總部確認。")
+            return
+
         recipe_text = "\n".join(
             [f"{key}：{value}" for key, value in recipe.items() if value]
         )
@@ -175,25 +222,52 @@ if recipe and (status != "active" or role not in allowed_recipe_roles):
 員工問題：
 {user_message}
 """
-    else:
-        prompt = f"""
+        response = model.generate_content(prompt)
+        reply_to_line(event, response.text)
+        return
+
+    # 2. 查不到配方，再查 Q&A
+    qa_answer = find_qa_answer(user_message, role, status)
+
+    if qa_answer:
+        reply_to_line(event, qa_answer)
+        return
+
+    # 3. Q&A 查不到，但如果是敏感問題，不准 Gemini 亂回答
+    if is_sensitive_question(user_message):
+        reply_to_line(event, "此問題涉及內部資料，目前資料庫沒有明確答案，請洽總部確認。")
+        return
+
+    # 4. 最後才交給 Gemini 回一般設備、現場操作、服務問題
+    prompt = f"""
 你是「三入好棧 AI 員工助手」。
 
 請用繁體中文回答。
-回答要簡單、現場可執行、不要太長。
+回答要簡單、現場可執行、條列式，不要太長。
 
-目前配方表查不到這個品項。
-請回答：
-目前資料庫沒有此品項資料，請詢問總部。
+你可以回答：
+1. 一般設備操作
+2. 常見錯誤排除
+3. 現場服務流程
+4. 顧客應對
+5. 基礎安全提醒
+
+但以下內容不可回答：
+1. 配方比例
+2. 原物料成本
+3. 毛利與內部財務
+4. 未公開加盟政策
+5. 任何你不確定的內容
+
+如果你不確定，請回答：
+「這個問題目前資料庫沒有明確資料，建議拍照或錄影後聯繫總部確認。」
 
 員工問題：
 {user_message}
 """
 
     response = model.generate_content(prompt)
-    reply_text = response.text
-
-    reply_to_line(event, reply_text)
+    reply_to_line(event, response.text)
 
 
 if __name__ == "__main__":
