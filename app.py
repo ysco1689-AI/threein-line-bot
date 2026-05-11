@@ -96,7 +96,11 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
+    user_id = event.source.user_id
     user_message = event.message.text
+
+    print("LINE_USER_ID:", user_id)
+    print("USER_MESSAGE:", user_message)
 
     recipe = find_recipe(user_message)
 
