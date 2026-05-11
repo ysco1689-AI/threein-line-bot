@@ -151,9 +151,11 @@ def handle_message(event):
 
     recipe = find_recipe(user_message)
 
-    if recipe and role != "admin":
-        reply_to_line(event, "此資料屬於總部內部資料，請洽總部確認。")
-        return
+allowed_recipe_roles = ["admin", "franchisee", "staff"]
+
+if recipe and (status != "active" or role not in allowed_recipe_roles):
+    reply_to_line(event, "此帳號目前沒有查詢配方權限，請洽總部確認。")
+    return
 
     if recipe:
         recipe_text = "\n".join(
