@@ -21,18 +21,35 @@ from linebot.v3.webhooks import (
 
 app = Flask(__name__)
 
+# =========================
+# 從 Render 環境變數取得設定
+# 不會把敏感金鑰直接寫死在程式
+# =========================
+
 CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
 CHANNEL_SECRET = os.getenv("CHANNEL_SECRET")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
 
+# =========================
+# 初始化 Gemini AI 模型
+# =========================
+
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-2.5-flash")
+
+# =========================
+# 初始化 LINE BOT API
+# =========================
 
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
+# =========================
+# 建立 Google Sheet 連線
+# 之後所有資料表都透過這裡存取
+# =========================
 
 def get_google_client():
     scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
@@ -45,24 +62,37 @@ def get_google_client():
 
     return gspread.authorize(credentials)
 
+# =========================
+# 讀取配方資料表(sheet1)
+# =========================
 
 def get_sheet_records():
     gc = get_google_client()
     sheet = gc.open_by_key(SPREADSHEET_ID).sheet1
     return sheet.get_all_records()
 
+# =========================
+# 讀取 users 權限資料表
+# =========================
 
 def get_users_records():
     gc = get_google_client()
     sheet = gc.open_by_key(SPREADSHEET_ID).worksheet("users")
     return sheet.get_all_records()
 
+# =========================
+# 讀取 QA 問答資料表
+# =========================
 
 def get_qa_records():
     gc = get_google_client()
     sheet = gc.open_by_key(SPREADSHEET_ID).worksheet("qa")
     return sheet.get_all_records()
 
+# =========================
+# 根據 LINE user_id
+# 查詢此人的角色與狀態
+# =========================
 
 def get_user_role(user_id):
     users = get_users_records()
@@ -79,6 +109,10 @@ def get_user_role(user_id):
         "status": "pending"
     }
 
+# =========================
+# 統一 LINE 回覆功能
+# 避免重複程式碼
+# =========================
 
 def reply_to_line(event, reply_text):
     with ApiClient(configuration) as api_client:
@@ -90,6 +124,11 @@ def reply_to_line(event, reply_text):
             )
         )
 
+
+# =========================
+# 根據使用者訊息搜尋配方
+# 並判斷冷熱飲
+# =========================
 
 def find_recipe(user_message):
     records = get_sheet_records()
@@ -127,6 +166,9 @@ def find_recipe(user_message):
 
     return matched_rows[0]
 
+# =========================
+# 搜尋 QA 問答資料庫
+# =========================
 
 def find_qa_answer(user_message, role, status):
     records = get_qa_records()
@@ -157,6 +199,9 @@ def find_qa_answer(user_message, role, status):
 
     return None
 
+# =========================
+# 防止 AI 回答內部敏感資訊
+# =========================
 
 def is_sensitive_question(user_message):
     sensitive_keywords = [
@@ -167,6 +212,10 @@ def is_sensitive_question(user_message):
 
     return any(word in user_message for word in sensitive_keywords)
 
+# =========================
+# LINE webhook 接收入口
+# LINE 傳訊息時會進到這裡
+# =========================
 
 @app.route("/callback", methods=["POST"])
 def callback():
