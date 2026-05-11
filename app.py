@@ -34,7 +34,7 @@ configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
 
-def get_sheet_records():
+def get_google_client():
     scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
     service_account_info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
 
@@ -43,10 +43,46 @@ def get_sheet_records():
         scopes=scopes
     )
 
-    gc = gspread.authorize(credentials)
-    sheet = gc.open_by_key(SPREADSHEET_ID).sheet1
+    return gspread.authorize(credentials)
 
+
+def get_sheet_records():
+    gc = get_google_client()
+    sheet = gc.open_by_key(SPREADSHEET_ID).sheet1
     return sheet.get_all_records()
+
+
+def get_users_records():
+    gc = get_google_client()
+    sheet = gc.open_by_key(SPREADSHEET_ID).worksheet("users")
+    return sheet.get_all_records()
+
+
+def get_user_role(user_id):
+    users = get_users_records()
+
+    for user in users:
+        if str(user.get("line_user_id", "")).strip() == user_id:
+            return {
+                "role": str(user.get("role", "")).strip(),
+                "status": str(user.get("status", "")).strip()
+            }
+
+    return {
+        "role": "guest",
+        "status": "pending"
+    }
+
+
+def reply_to_line(event, reply_text):
+    with ApiClient(configuration) as api_client:
+        line_bot_api = MessagingApi(api_client)
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[TextMessage(text=reply_text)]
+            )
+        )
 
 
 def find_recipe(user_message):
@@ -102,7 +138,22 @@ def handle_message(event):
     print("LINE_USER_ID:", user_id)
     print("USER_MESSAGE:", user_message)
 
+    user_info = get_user_role(user_id)
+    role = user_info["role"]
+    status = user_info["status"]
+
+    print("ROLE:", role)
+    print("STATUS:", status)
+
+    if status == "blocked" or role == "blocked":
+        reply_to_line(event, "此帳號目前無法使用本系統，請洽總部。")
+        return
+
     recipe = find_recipe(user_message)
+
+    if recipe and role != "admin":
+        reply_to_line(event, "此資料屬於總部內部資料，請洽總部確認。")
+        return
 
     if recipe:
         recipe_text = "\n".join(
@@ -140,14 +191,7 @@ def handle_message(event):
     response = model.generate_content(prompt)
     reply_text = response.text
 
-    with ApiClient(configuration) as api_client:
-        line_bot_api = MessagingApi(api_client)
-        line_bot_api.reply_message(
-            ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[TextMessage(text=reply_text)]
-            )
-        )
+    reply_to_line(event, reply_text)
 
 
 if __name__ == "__main__":
