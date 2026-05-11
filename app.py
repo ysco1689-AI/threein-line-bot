@@ -19,7 +19,13 @@ from linebot.v3.webhooks import (
     TextMessageContent
 )
 
+# =========================
+# 建立 Flask 網頁伺服器
+# Render 會透過這個接收 LINE webhook
+# =========================
+
 app = Flask(__name__)
+
 
 # =========================
 # 從 Render 環境變數取得設定
@@ -32,12 +38,14 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
 
+
 # =========================
 # 初始化 Gemini AI 模型
 # =========================
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-2.5-flash")
+
 
 # =========================
 # 初始化 LINE BOT API
@@ -46,13 +54,14 @@ model = genai.GenerativeModel("gemini-2.5-flash")
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
+
 # =========================
 # 建立 Google Sheet 連線
 # 之後所有資料表都透過這裡存取
 # =========================
 
 def get_google_client():
-    scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
     service_account_info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
 
     credentials = Credentials.from_service_account_info(
@@ -62,14 +71,16 @@ def get_google_client():
 
     return gspread.authorize(credentials)
 
+
 # =========================
-# 讀取配方資料表(sheet1)
+# 讀取配方資料表 sheet1
 # =========================
 
 def get_sheet_records():
     gc = get_google_client()
     sheet = gc.open_by_key(SPREADSHEET_ID).sheet1
     return sheet.get_all_records()
+
 
 # =========================
 # 讀取 users 權限資料表
@@ -80,8 +91,9 @@ def get_users_records():
     sheet = gc.open_by_key(SPREADSHEET_ID).worksheet("users")
     return sheet.get_all_records()
 
+
 # =========================
-# 讀取 QA 問答資料表
+# 讀取 qa 問答資料表
 # =========================
 
 def get_qa_records():
@@ -89,9 +101,31 @@ def get_qa_records():
     sheet = gc.open_by_key(SPREADSHEET_ID).worksheet("qa")
     return sheet.get_all_records()
 
+
+# =========================
+# 自動新增新使用者
+# users 表找不到時，預設新增為 guest / pending
+# =========================
+
+def add_new_user(user_id):
+    gc = get_google_client()
+    sheet = gc.open_by_key(SPREADSHEET_ID).worksheet("users")
+
+    sheet.append_row([
+        user_id,
+        "新使用者",
+        "guest",
+        "pending",
+        "自動加入"
+    ])
+
+    print("已自動新增使用者:", user_id)
+
+
 # =========================
 # 根據 LINE user_id
 # 查詢此人的角色與狀態
+# 如果 users 表找不到，就自動新增成 guest / pending
 # =========================
 
 def get_user_role(user_id):
@@ -104,10 +138,13 @@ def get_user_role(user_id):
                 "status": str(user.get("status", "")).strip()
             }
 
+    add_new_user(user_id)
+
     return {
         "role": "guest",
         "status": "pending"
     }
+
 
 # =========================
 # 統一 LINE 回覆功能
@@ -166,8 +203,11 @@ def find_recipe(user_message):
 
     return matched_rows[0]
 
+
 # =========================
-# 搜尋 QA 問答資料庫
+# 搜尋 qa 問答資料庫
+# 根據 keywords 比對問題
+# 並依 permission 判斷是否能回答
 # =========================
 
 def find_qa_answer(user_message, role, status):
@@ -199,8 +239,10 @@ def find_qa_answer(user_message, role, status):
 
     return None
 
+
 # =========================
-# 防止 AI 回答內部敏感資訊
+# 防止 Gemini 回答內部敏感資訊
+# 避免查不到配方時，AI 自己亂猜比例或成本
 # =========================
 
 def is_sensitive_question(user_message):
@@ -212,6 +254,7 @@ def is_sensitive_question(user_message):
 
     return any(word in user_message for word in sensitive_keywords)
 
+
 # =========================
 # LINE webhook 接收入口
 # LINE 傳訊息時會進到這裡
@@ -221,9 +264,16 @@ def is_sensitive_question(user_message):
 def callback():
     signature = request.headers["X-Line-Signature"]
     body = request.get_data(as_text=True)
+
     handler.handle(body, signature)
+
     return "OK"
 
+
+# =========================
+# 主訊息處理區
+# 整個 AI LINE Bot 核心流程
+# =========================
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
@@ -233,6 +283,7 @@ def handle_message(event):
     print("LINE_USER_ID:", user_id)
     print("USER_MESSAGE:", user_message)
 
+    # 取得使用者權限
     user_info = get_user_role(user_id)
     role = user_info["role"]
     status = user_info["status"]
@@ -240,13 +291,21 @@ def handle_message(event):
     print("ROLE:", role)
     print("STATUS:", status)
 
+    # =========================
+    # 黑名單直接禁止使用
+    # =========================
+
     if status == "blocked" or role == "blocked":
         reply_to_line(event, "此帳號目前無法使用本系統，請洽總部。")
         return
 
+    # =========================
+    # 第一優先：查詢配方
+    # admin / franchisee / staff 且 active 才能查配方
+    # =========================
+
     allowed_recipe_roles = ["admin", "franchisee", "staff"]
 
-    # 1. 先查配方
     recipe = find_recipe(user_message)
 
     if recipe:
@@ -271,23 +330,36 @@ def handle_message(event):
 員工問題：
 {user_message}
 """
+
         response = model.generate_content(prompt)
         reply_to_line(event, response.text)
         return
 
-    # 2. 查不到配方，再查 Q&A
+    # =========================
+    # 第二優先：查詢 qa 問答資料庫
+    # 適合放檔期、叫貨、設備、SOP 等固定答案
+    # =========================
+
     qa_answer = find_qa_answer(user_message, role, status)
 
     if qa_answer:
         reply_to_line(event, qa_answer)
         return
 
-    # 3. Q&A 查不到，但如果是敏感問題，不准 Gemini 亂回答
+    # =========================
+    # 第三優先：敏感問題阻擋
+    # 配方表與 Q&A 都查不到時，避免 Gemini 亂回答內部機密
+    # =========================
+
     if is_sensitive_question(user_message):
         reply_to_line(event, "此問題涉及內部資料，目前資料庫沒有明確答案，請洽總部確認。")
         return
 
-    # 4. 最後才交給 Gemini 回一般設備、現場操作、服務問題
+    # =========================
+    # 最後才交給 Gemini 回答
+    # 只處理一般設備、服務、現場問題
+    # =========================
+
     prompt = f"""
 你是「三入好棧 AI 員工助手」。
 
@@ -318,6 +390,10 @@ def handle_message(event):
     response = model.generate_content(prompt)
     reply_to_line(event, response.text)
 
+
+# =========================
+# Render 啟動 Flask 伺服器
+# =========================
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
