@@ -26,6 +26,15 @@ from linebot.v3.webhooks import (
 
 app = Flask(__name__)
 
+# =========================
+# 全域快取資料
+# 避免每次訊息都重新讀 Google Sheet
+# =========================
+
+recipe_cache = []
+users_cache = []
+qa_cache = []
+
 
 # =========================
 # 從 Render 環境變數取得設定
@@ -71,36 +80,32 @@ def get_google_client():
 
     return gspread.authorize(credentials)
 
-
 # =========================
-# 讀取配方資料表 sheet1
-# =========================
-
-def get_sheet_records():
-    gc = get_google_client()
-    sheet = gc.open_by_key(SPREADSHEET_ID).sheet1
-    return sheet.get_all_records()
-
-
-# =========================
-# 讀取 users 權限資料表
+# 初始化所有 Google Sheet 資料
+# 啟動時只讀一次
 # =========================
 
-def get_users_records():
-    gc = get_google_client()
-    sheet = gc.open_by_key(SPREADSHEET_ID).worksheet("users")
-    return sheet.get_all_records()
+def load_all_data():
+    global recipe_cache, users_cache, qa_cache
 
+    try:
+        gc = get_google_client()
 
-# =========================
-# 讀取 qa 問答資料表
-# =========================
+        spreadsheet = gc.open_by_key(SPREADSHEET_ID)
 
-def get_qa_records():
-    gc = get_google_client()
-    sheet = gc.open_by_key(SPREADSHEET_ID).worksheet("qa")
-    return sheet.get_all_records()
+        # 配方表
+        recipe_cache = spreadsheet.sheet1.get_all_records()
 
+        # users 表
+        users_cache = spreadsheet.worksheet("users").get_all_records()
+
+        # qa 表
+        qa_cache = spreadsheet.worksheet("qa").get_all_records()
+
+        print("Google Sheet 資料載入成功")
+
+    except Exception as e:
+        print("讀取 Google Sheet 失敗：", e)
 
 # =========================
 # 自動新增新使用者
@@ -108,6 +113,8 @@ def get_qa_records():
 # =========================
 
 def add_new_user(user_id):
+    global users_cache
+
     gc = get_google_client()
     sheet = gc.open_by_key(SPREADSHEET_ID).worksheet("users")
 
@@ -119,6 +126,14 @@ def add_new_user(user_id):
         "自動加入"
     ])
 
+    users_cache.append({
+        "line_user_id": user_id,
+        "name": "新使用者",
+        "role": "guest",
+        "status": "pending",
+        "note": "自動加入"
+    })
+
     print("已自動新增使用者:", user_id)
 
 
@@ -129,7 +144,7 @@ def add_new_user(user_id):
 # =========================
 
 def get_user_role(user_id):
-    users = get_users_records()
+    users = users_cache
 
     for user in users:
         if str(user.get("line_user_id", "")).strip() == user_id:
@@ -168,7 +183,7 @@ def reply_to_line(event, reply_text):
 # =========================
 
 def find_recipe(user_message):
-    records = get_sheet_records()
+    records = recipe_cache
 
     want_hot = any(word in user_message for word in ["熱", "熱的", "熱飲", "溫的"])
     want_cold = any(word in user_message for word in ["冷", "冷的", "冷飲", "冰", "冰的"])
@@ -211,7 +226,7 @@ def find_recipe(user_message):
 # =========================
 
 def find_qa_answer(user_message, role, status):
-    records = get_qa_records()
+    records = qa_cache
 
     for row in records:
         keywords = str(row.get("keywords", "")).split(",")
@@ -262,7 +277,11 @@ def is_sensitive_question(user_message):
 
 @app.route("/callback", methods=["POST"])
 def callback():
-    signature = request.headers["X-Line-Signature"]
+    signature = request.headers.get("X-Line-Signature")
+
+    if not signature:
+        return "Missing signature", 400
+
     body = request.get_data(as_text=True)
 
     handler.handle(body, signature)
@@ -356,7 +375,11 @@ def handle_message(event):
 """
 
         response = model.generate_content(prompt)
-        reply_to_line(event, response.text)
+
+        reply_to_line(
+            event,
+            response.text if response.text else "目前無法產生回覆，請稍後再試。"
+        )
         return
 
     # =========================
@@ -434,12 +457,18 @@ def handle_message(event):
 {user_message}
 """
     response = model.generate_content(prompt)
-    reply_to_line(event, response.text)
+
+    reply_to_line(
+        event,
+        response.text if response.text else "目前無法產生回覆，請稍後再試。"
+    )
 
 
 # =========================
-# Render 啟動 Flask 伺服器
+# 啟動時先載入 Google Sheet
 # =========================
+
+load_all_data()
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
