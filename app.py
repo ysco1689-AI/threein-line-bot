@@ -296,14 +296,19 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
+
     user_id = event.source.user_id
     user_message = event.message.text
 
     print("LINE_USER_ID:", user_id)
     print("USER_MESSAGE:", user_message)
 
+    # =========================
     # 取得使用者權限
+    # =========================
+
     user_info = get_user_role(user_id)
+
     role = user_info["role"]
     status = user_info["status"]
 
@@ -328,67 +333,90 @@ def handle_message(event):
     recipe = find_recipe(user_message)
 
     if recipe:
+
         if status != "active" or role not in allowed_recipe_roles:
             reply_to_line(event, "此帳號目前沒有查詢配方權限，請洽總部確認。")
             return
+
+        # =========================
+        # 判斷是否需要 AI
+        # =========================
+
+        need_ai_keywords = [
+            "怎麼", "異常", "太甜", "太淡",
+            "太苦", "客人", "問題", "壞掉",
+            "錯誤", "失敗", "封口", "沒味道"
+        ]
+
+        need_ai = any(word in user_message for word in need_ai_keywords)
+
+        # =========================
+        # 不需要 AI → 直接回配方
+        # =========================
+
+        if not need_ai:
+
+            product_name = recipe.get("品項", "此品項")
+
+            recipe_lines = []
+
+            for key, value in recipe.items():
+                if value and key not in ["品項"]:
+                    recipe_lines.append(f"{key}：{value}")
+
+            reply_text = (
+                f"{product_name}配方如下：\n"
+                + "\n".join(recipe_lines)
+            )
+
+            reply_to_line(event, reply_text)
+            return
+
+        # =========================
+        # 需要 AI 才呼叫 Gemini
+        # =========================
 
         recipe_text = "\n".join(
             [f"{key}：{value}" for key, value in recipe.items() if value]
         )
 
         prompt = f"""
-你是「三入好棧 AI 專業店員助手」。
+你是三入好棧店長助手。
 
-請用繁體中文回答。
+用繁體中文。
 
-你的回答風格要像：
-1. 夜市現場店長
-2. 有經驗的飲料店員工
-3. 回答親切自然
-4. 不要太官方
-5. 不要長篇大論
+回答像現場資深店員：
+- 簡短自然
+- 像LINE訊息
+- 直接講重點
+- 不超過60字
+- 最多3句
 
-回答規則：
-1. 回答像現場主管，不像客服。
-2. 先直接講重點。
-3. 最多3句話。
-4. 不要超過80字。
-5. 不要解釋太多原理。
-6. 不要使用「一、二、三」長篇格式。
-7. 不要過度安撫。
-8. 員工很忙，5秒內要看懂。
-9. 用短句。
-10. 像LINE訊息。
+只能根據以下資料回答：
 
-如果問題很簡單：
-直接講重點即可。
-
-例如：
-「E05通常是溫度沒上來，先重開機看看，再檢查封口膜有沒有卡住。如果還是一樣，再通知主管處理。」
-
-不要過度解釋原理。
-不要一次講太多種可能性。
-
-你只能根據以下配方資料回答，不可以自行編造。
-
-配方資料：
 {recipe_text}
 
 員工問題：
 {user_message}
 """
 
-        response = model.generate_content(prompt)
+        response = model.generate_content(
+            prompt,
+            generation_config={
+                "temperature": 0.3,
+                "max_output_tokens": 80
+            }
+        )
 
         reply_to_line(
             event,
             response.text if response.text else "目前無法產生回覆，請稍後再試。"
         )
+
         return
 
     # =========================
-    # 第二優先：查詢 qa 問答資料庫
-    # 適合放檔期、叫貨、設備、SOP 等固定答案
+    # 第二優先：查詢 QA 問答資料庫
     # =========================
 
     qa_answer = find_qa_answer(user_message, role, status)
@@ -399,75 +427,53 @@ def handle_message(event):
 
     # =========================
     # 第三優先：敏感問題阻擋
-    # 配方表與 Q&A 都查不到時，避免 Gemini 亂回答內部機密
     # =========================
 
     if is_sensitive_question(user_message):
-        reply_to_line(event, "此問題涉及內部資料，目前資料庫沒有明確答案，請洽總部確認。")
+        reply_to_line(
+            event,
+            "此問題涉及內部資料，目前資料庫沒有明確答案，請洽總部確認。"
+        )
         return
 
     # =========================
     # 最後才交給 Gemini 回答
-    # 只處理一般設備、服務、現場問題
     # =========================
 
     prompt = f"""
-你是「三入好棧 AI 現場店長助手」。
+你是三入好棧現場店長助手。
 
-請用繁體中文回答。
+用繁體中文。
 
-你的回答風格要像：
-1. 有經驗的夜市店長
-2. 現場主管
-3. 教員工排除問題
+回答像資深店員：
+- 簡短
+- 實用
+- 像LINE訊息
+- 最多120字
 
-回答方式：
-1. 先安撫對方
-2. 再一步一步教學
-3. 使用條列式
-4. 回答務實、現場能立即操作
-5. 不要太官方
-6. 不要太簡短
-
-你可以回答：
-- 封口機
-- 冰箱
-- 製冰機
-- 飲料操作
-- 現場服務
-- 客人應對
-- 基礎設備排除
-- 清潔問題
-- SOP 問題
-
-但以下內容禁止回答：
-1. 配方比例
-2. 原物料成本
-3. 毛利
-4. 未公開加盟政策
-5. 危險拆機與改電路
-
-如果遇到設備問題：
-請先提供：
-1. 可能原因
-2. 基本檢查方式
-3. 現場先做什麼
-4. 何時通知主管
-
-如果真的不確定：
-再請對方拍照或錄影聯繫總部。
+禁止回答：
+- 配方比例
+- 成本毛利
+- 未公開加盟資訊
+- 危險拆機
 
 員工問題：
 {user_message}
 """
-    response = model.generate_content(prompt)
+
+    response = model.generate_content(
+        prompt,
+        generation_config={
+            "temperature": 0.3,
+            "max_output_tokens": 120
+        }
+    )
 
     reply_to_line(
         event,
         response.text if response.text else "目前無法產生回覆，請稍後再試。"
     )
-
-
+    
 # =========================
 # 啟動時先載入 Google Sheet
 # =========================
