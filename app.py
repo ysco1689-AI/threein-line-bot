@@ -1,6 +1,3 @@
-# app.py（完整修正版）
-
-```python
 import os
 import json
 import google.generativeai as genai
