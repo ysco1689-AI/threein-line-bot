@@ -1,3 +1,6 @@
+# app.py（完整修正版）
+
+```python
 import os
 import json
 import google.generativeai as genai
@@ -21,24 +24,20 @@ from linebot.v3.webhooks import (
 
 # =========================
 # 建立 Flask 網頁伺服器
-# Render 會透過這個接收 LINE webhook
 # =========================
 
 app = Flask(__name__)
 
 # =========================
 # 全域快取資料
-# 避免每次訊息都重新讀 Google Sheet
 # =========================
 
 recipe_cache = []
 users_cache = []
 qa_cache = []
 
-
 # =========================
-# 從 Render 環境變數取得設定
-# 不會把敏感金鑰直接寫死在程式
+# Render 環境變數
 # =========================
 
 CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
@@ -47,31 +46,30 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
 
-
 # =========================
-# 初始化 Gemini AI 模型
+# Gemini 初始化
 # =========================
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-2.5-flash")
 
-
 # =========================
-# 初始化 LINE BOT API
+# LINE BOT 初始化
 # =========================
 
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-
 # =========================
-# 建立 Google Sheet 連線
-# 之後所有資料表都透過這裡存取
+# Google Sheet 連線
 # =========================
 
 def get_google_client():
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-    service_account_info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+
+    service_account_info = json.loads(
+        GOOGLE_SERVICE_ACCOUNT_JSON
+    )
 
     credentials = Credentials.from_service_account_info(
         service_account_info,
@@ -81,8 +79,7 @@ def get_google_client():
     return gspread.authorize(credentials)
 
 # =========================
-# 初始化所有 Google Sheet 資料
-# 啟動時只讀一次
+# 載入 Google Sheet
 # =========================
 
 def load_all_data():
@@ -109,7 +106,6 @@ def load_all_data():
 
 # =========================
 # 自動新增新使用者
-# users 表找不到時，預設新增為 guest / pending
 # =========================
 
 def add_new_user(user_id):
@@ -136,11 +132,8 @@ def add_new_user(user_id):
 
     print("已自動新增使用者:", user_id)
 
-
 # =========================
-# 根據 LINE user_id
-# 查詢此人的角色與狀態
-# 如果 users 表找不到，就自動新增成 guest / pending
+# 查詢使用者權限
 # =========================
 
 def get_user_role(user_id):
@@ -160,15 +153,14 @@ def get_user_role(user_id):
         "status": "pending"
     }
 
-
 # =========================
-# 統一 LINE 回覆功能
-# 避免重複程式碼
+# LINE 回覆功能
 # =========================
 
 def reply_to_line(event, reply_text):
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
+
         line_bot_api.reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
@@ -176,17 +168,22 @@ def reply_to_line(event, reply_text):
             )
         )
 
-
 # =========================
-# 根據使用者訊息搜尋配方
-# 並判斷冷熱飲
+# 搜尋配方
 # =========================
 
 def find_recipe(user_message):
     records = recipe_cache
 
-    want_hot = any(word in user_message for word in ["熱", "熱的", "熱飲", "溫的"])
-    want_cold = any(word in user_message for word in ["冷", "冷的", "冷飲", "冰", "冰的"])
+    want_hot = any(
+        word in user_message
+        for word in ["熱", "熱的", "熱飲", "溫的"]
+    )
+
+    want_cold = any(
+        word in user_message
+        for word in ["冷", "冷的", "冷飲", "冰", "冰的"]
+    )
 
     matched_rows = []
 
@@ -202,27 +199,27 @@ def find_recipe(user_message):
     if want_hot:
         for row in matched_rows:
             temp = str(row.get("溫度", "")).strip()
+
             if temp in ["熱", "熱飲", "溫"]:
                 return row
 
     if want_cold:
         for row in matched_rows:
             temp = str(row.get("溫度", "")).strip()
+
             if temp in ["冷", "冷飲", "冰"]:
                 return row
 
     for row in matched_rows:
         temp = str(row.get("溫度", "")).strip()
+
         if temp in ["冷", "冷飲", "冰"]:
             return row
 
     return matched_rows[0]
 
-
 # =========================
-# 搜尋 qa 問答資料庫
-# 根據 keywords 比對問題
-# 並依 permission 判斷是否能回答
+# 搜尋 QA 資料庫
 # =========================
 
 def find_qa_answer(user_message, role, status):
@@ -234,45 +231,49 @@ def find_qa_answer(user_message, role, status):
         permission = str(row.get("permission", "")).strip()
 
         matched = any(
-            keyword.strip() and keyword.strip() in user_message
+            len(keyword.strip()) >= 3
+            and keyword.strip() in user_message
             for keyword in keywords
         )
 
         if matched:
+
             if permission == "public":
                 return answer
 
             if permission == "franchisee":
                 if status == "active" and role in ["admin", "franchisee", "staff"]:
                     return answer
+
                 return "此問題需要加盟主或員工權限，請洽總部。"
 
             if permission == "admin":
                 if status == "active" and role == "admin":
                     return answer
+
                 return "此問題需要總部權限，請洽總部。"
 
     return None
 
-
 # =========================
-# 防止 Gemini 回答內部敏感資訊
-# 避免查不到配方時，AI 自己亂猜比例或成本
+# 敏感問題阻擋
 # =========================
 
 def is_sensitive_question(user_message):
     sensitive_keywords = [
         "配方", "比例", "成本", "毛利", "原物料",
-        "仙草汁", "黑糖", "二砂", "冬瓜糖", "甘草", "海鹽",
-        "茶包", "煮法", "熬煮", "幾克", "幾公克", "多少克"
+        "仙草汁", "黑糖", "二砂", "冬瓜糖",
+        "甘草", "海鹽", "茶包", "煮法",
+        "熬煮", "幾克", "幾公克", "多少克"
     ]
 
-    return any(word in user_message for word in sensitive_keywords)
-
+    return any(
+        word in user_message
+        for word in sensitive_keywords
+    )
 
 # =========================
-# LINE webhook 接收入口
-# LINE 傳訊息時會進到這裡
+# LINE webhook
 # =========================
 
 @app.route("/callback", methods=["POST"])
@@ -288,10 +289,8 @@ def callback():
 
     return "OK"
 
-
 # =========================
 # 主訊息處理區
-# 整個 AI LINE Bot 核心流程
 # =========================
 
 @handler.add(MessageEvent, message=TextMessageContent)
@@ -303,10 +302,6 @@ def handle_message(event):
     print("LINE_USER_ID:", user_id)
     print("USER_MESSAGE:", user_message)
 
-    # =========================
-    # 取得使用者權限
-    # =========================
-
     user_info = get_user_role(user_id)
 
     role = user_info["role"]
@@ -316,7 +311,7 @@ def handle_message(event):
     print("STATUS:", status)
 
     # =========================
-    # 黑名單直接禁止使用
+    # 黑名單阻擋
     # =========================
 
     if status == "blocked" or role == "blocked":
@@ -324,105 +319,50 @@ def handle_message(event):
         return
 
     # =========================
-    # 第一優先：查詢配方
-    # admin / franchisee / staff 且 active 才能查配方
-    # =========================
-
-    allowed_recipe_roles = ["admin", "franchisee", "staff"]
-
-    recipe = find_recipe(user_message)
-
-    if recipe:
-
-        if status != "active" or role not in allowed_recipe_roles:
-            reply_to_line(event, "此帳號目前沒有查詢配方權限，請洽總部確認。")
-            return
-
-        # =========================
-        # 判斷是否需要 AI
-        # =========================
-
-        need_ai_keywords = [
-            "怎麼", "異常", "太甜", "太淡",
-            "太苦", "客人", "問題", "壞掉",
-            "錯誤", "失敗", "封口", "沒味道"
-        ]
-
-        need_ai = any(word in user_message for word in need_ai_keywords)
-
-        # =========================
-        # 不需要 AI → 直接回配方
-        # =========================
-
-        if not need_ai:
-
-            product_name = recipe.get("品項", "此品項")
-
-            recipe_lines = []
-
-            for key, value in recipe.items():
-                if value and key not in ["品項"]:
-                    recipe_lines.append(f"{key}：{value}")
-
-            reply_text = (
-                f"{product_name}配方如下：\n"
-                + "\n".join(recipe_lines)
-            )
-
-            reply_to_line(event, reply_text)
-            return
-
-        # =========================
-        # 需要 AI 才呼叫 Gemini
-        # =========================
-
-        recipe_text = "\n".join(
-            [f"{key}：{value}" for key, value in recipe.items() if value]
-        )
-
-        prompt = f"""
-你是三入好棧店長助手。
-
-用繁體中文。
-
-回答像現場資深店員：
-- 簡短自然
-- 像LINE訊息
-- 直接講重點
-- 不超過60字
-- 最多3句
-
-只能根據以下資料回答：
-
-{recipe_text}
-
-員工問題：
-{user_message}
-"""
-
-        response = model.generate_content(
-            prompt,
-            generation_config={
-                "temperature": 0.3,
-                "max_output_tokens": 80
-            }
-        )
-
-        reply_to_line(
-            event,
-            response.text if response.text else "目前無法產生回覆，請稍後再試。"
-        )
-
-        return
-
-    # =========================
-    # 第二優先：查詢 QA 問答資料庫
+    # 第一優先：QA / SOP / 客訴
     # =========================
 
     qa_answer = find_qa_answer(user_message, role, status)
 
     if qa_answer:
         reply_to_line(event, qa_answer)
+        return
+
+    # =========================
+    # 第二優先：查配方
+    # =========================
+
+    allowed_recipe_roles = [
+        "admin",
+        "franchisee",
+        "staff"
+    ]
+
+    recipe = find_recipe(user_message)
+
+    if recipe:
+
+        if status != "active" or role not in allowed_recipe_roles:
+            reply_to_line(
+                event,
+                "此帳號目前沒有查詢配方權限，請洽總部確認。"
+            )
+            return
+
+        product_name = recipe.get("品項", "此品項")
+
+        recipe_lines = []
+
+        for key, value in recipe.items():
+            if value and key not in ["品項"]:
+                recipe_lines.append(f"{key}：{value}")
+
+        reply_text = (
+            f"{product_name}配方如下：\n"
+            + "\n".join(recipe_lines)
+        )
+
+        reply_to_line(event, reply_text)
         return
 
     # =========================
@@ -437,7 +377,7 @@ def handle_message(event):
         return
 
     # =========================
-    # 最後才交給 Gemini 回答
+    # 最後才交給 Gemini
     # =========================
 
     prompt = f"""
@@ -473,7 +413,7 @@ def handle_message(event):
         event,
         response.text if response.text else "目前無法產生回覆，請稍後再試。"
     )
-    
+
 # =========================
 # 啟動時先載入 Google Sheet
 # =========================
