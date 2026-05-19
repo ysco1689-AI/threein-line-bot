@@ -223,9 +223,30 @@ def find_qa_answer(user_message, role, status):
     records = qa_cache
 
     for row in records:
-        keywords = str(row.get("keywords", "")).split(",")
-        answer = str(row.get("answer", "")).strip()
-        permission = str(row.get("permission", "")).strip()
+
+        keywords = str(
+            row.get("keywords", "")
+        ).split(",")
+
+        answer = str(
+            row.get("answer", "")
+        ).strip()
+
+        permission = str(
+            row.get("permission", "")
+        ).strip()
+
+        # =========================
+        # QA答案太短 → 視同無效
+        # =========================
+
+        if len(answer) < 20:
+            continue
+
+        # =========================
+        # keyword 太短 → 不參與匹配
+        # 避免「紅茶」「E05」亂命中
+        # =========================
 
         matched = any(
             len(keyword.strip()) >= 3
@@ -233,25 +254,49 @@ def find_qa_answer(user_message, role, status):
             for keyword in keywords
         )
 
-        if matched:
+        if not matched:
+            continue
 
-            if permission == "public":
+        # =========================
+        # public 權限
+        # =========================
+
+        if permission == "public":
+            return answer
+
+        # =========================
+        # franchisee 權限
+        # =========================
+
+        if permission == "franchisee":
+
+            if (
+                status == "active"
+                and role in ["admin", "franchisee", "staff"]
+            ):
                 return answer
 
-            if permission == "franchisee":
-                if status == "active" and role in ["admin", "franchisee", "staff"]:
-                    return answer
+            return "此問題需要加盟主或員工權限，請洽總部。"
 
-                return "此問題需要加盟主或員工權限，請洽總部。"
+        # =========================
+        # admin 權限
+        # =========================
 
-            if permission == "admin":
-                if status == "active" and role == "admin":
-                    return answer
+        if permission == "admin":
 
-                return "此問題需要總部權限，請洽總部。"
+            if (
+                status == "active"
+                and role == "admin"
+            ):
+                return answer
+
+            return "此問題需要總部權限，請洽總部。"
+
+    # =========================
+    # 完全沒找到
+    # =========================
 
     return None
-
 # =========================
 # 敏感問題阻擋
 # =========================
@@ -322,12 +367,8 @@ def handle_message(event):
     qa_answer = find_qa_answer(user_message, role, status)
 
     if qa_answer:
-        
-        # QA答案太短 → 視同沒答案
-        if len(qa_answer.strip()) >= 20:
-
-            reply_to_line(event, qa_answer)
-            return
+        reply_to_line(event, qa_answer)
+        return
 
     # =========================
     # 第二優先：查配方
