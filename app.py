@@ -456,7 +456,9 @@ def handle_message(event):
         prompt,
         generation_config={
             "temperature": 0.5,
-            "max_output_tokens": 450
+            "max_output_tokens": 700,
+            "top_p": 0.9,
+            "top_k": 40
         }
     )
 
