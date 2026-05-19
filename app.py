@@ -1,5 +1,6 @@
 import os
 import json
+import tempfile
 import google.generativeai as genai
 import gspread
 
@@ -11,6 +12,7 @@ from linebot.v3.messaging import (
     Configuration,
     ApiClient,
     MessagingApi,
+    MessagingApiBlob,
     ReplyMessageRequest,
     TextMessage
 )
@@ -334,17 +336,73 @@ def callback():
     return "OK"
 
 # =========================
-# 圖片訊息處理
+# 圖片訊息處理（Gemini Vision）
 # =========================
 
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image_message(event):
-    reply_to_line(
-        event,
-        "我收到圖片了，請再補一句問題，例如：封口機E05、封膜歪掉、杯膜封不起來。這樣我才能判斷處理方式。"
+
+    message_id = event.message.id
+
+    with ApiClient(configuration) as api_client:
+        line_bot_blob_api = MessagingApiBlob(api_client)
+        image_content = line_bot_blob_api.get_message_content(message_id)
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_file:
+
+        temp_file.write(image_content)
+
+        image_path = temp_file.name
+
+    image_file = genai.upload_file(image_path)
+
+    prompt = """
+你是三入好棧現場設備助手。
+
+請根據圖片判斷現場設備問題。
+
+如果圖片有：
+- 封口機錯誤碼
+- 溫度異常
+- 卡膜
+- 封膜歪掉
+- 機器異常畫面
+
+請直接提供現場排除方式。
+
+回答規則：
+- 使用繁體中文
+- 不要只描述圖片
+- 要告訴員工如何處理
+- 用條列式
+- 不要太官方
+
+回答格式：
+
+1. 我看到的狀況：
+2. 可能原因：
+3. 現場先做：
+4. 檢查重點：
+5. 何時回報主管：
+"""
+
+    response = model.generate_content(
+        [prompt, image_file],
+        generation_config={
+            "temperature": 0.3,
+            "max_output_tokens": 700,
+            "top_p": 0.9,
+            "top_k": 40
+        }
     )
 
+    reply_text = (
+        response.text
+        if response.text
+        else "圖片判斷不清楚，請補拍錯誤畫面。"
+    )
 
+    reply_to_line(event, reply_text)
 # =========================
 # 影片訊息處理
 # =========================
