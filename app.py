@@ -16,7 +16,9 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import (
     MessageEvent,
-    TextMessageContent
+    TextMessageContent,
+    ImageMessageContent,
+    VideoMessageContent
 )
 
 # =========================
@@ -330,6 +332,37 @@ def callback():
     handler.handle(body, signature)
 
     return "OK"
+
+# =========================
+# 圖片訊息處理
+# =========================
+
+@handler.add(MessageEvent, message=ImageMessageContent)
+def handle_image_message(event):
+    reply_to_line(
+        event,
+        "我收到圖片了，請再補一句問題，例如：封口機E05、封膜歪掉、杯膜封不起來。這樣我才能判斷處理方式。"
+    )
+
+
+# =========================
+# 影片訊息處理
+# =========================
+
+@handler.add(MessageEvent, message=VideoMessageContent)
+def handle_video_message(event):
+    reply_to_line(
+        event,
+        "我收到影片了，請再補一句問題，例如：機器一直轉、封口機E07、封膜卡住。這樣我才能判斷處理方式。"
+    )
+
+# =========================
+# 主訊息處理區
+# =========================
+
+@handler.add(MessageEvent, message=TextMessageContent)
+def handle_message(event):
+
 
 # =========================
 # 主訊息處理區
