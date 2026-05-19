@@ -418,10 +418,10 @@ def handle_message(event):
         )
         return
 
-# =========================
-# 最後才交給 Gemini
-# QA 沒資料時，提供現場排除建議
-# =========================
+    # =========================
+    # 最後才交給 Gemini
+    # QA 沒資料時，提供現場排除建議
+    # =========================
 
     prompt = f"""
 你是三入好棧現場店長助手。
@@ -431,22 +431,26 @@ def handle_message(event):
 
 回答規則：
 - 像資深店長教員工
-- 最多3句
+- 設備問題請用3到5點條列
+- 每點一句話，現場員工看得懂
 - 不要只回代碼或單字
 - 一定要給「現場先做什麼」
 - 不知道代碼真正意思時，要說「先用基本排除法」
 - 禁止回答配方比例、成本、毛利、未公開加盟資訊、危險拆機
 
 回答格式：
-先說可能原因。
-再說現場先檢查什麼。
-最後說什麼情況要回報主管。
+1. 可能原因
+2. 先做什麼
+3. 檢查哪裡
+4. 何時停機
+5. 何時回報主管
 
 員工問題：
 {user_message}
 """
 
     print("HIT_GEMINI")
+
     response = model.generate_content(
         prompt,
         generation_config={
@@ -455,11 +459,14 @@ def handle_message(event):
         }
     )
 
+    print("GEMINI_TEXT:", response.text)
+    print("GEMINI_LENGTH:", len(response.text) if response.text else 0)
+    
     reply_to_line(
         event,
         response.text if response.text else "目前沒有明確答案，請先拍照回報主管。"
     )
-
+    
 # =========================
 # 啟動時先載入 Google Sheet
 # =========================
