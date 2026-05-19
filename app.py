@@ -432,7 +432,8 @@ def handle_message(event):
 回答規則：
 - 像資深店長教員工
 - 設備問題請用3到5點條列
-- 每點一句話，現場員工看得懂
+- 每個項目請用1到2句完整說明
+- 不可以只回答開頭或半句
 - 不要只回代碼或單字
 - 回答至少120字
 - 一定要給「現場先做什麼」
@@ -452,7 +453,7 @@ def handle_message(event):
 
     print("HIT_GEMINI")
 
-    response = model.generate_content(
+        response = model.generate_content(
         prompt,
         generation_config={
             "temperature": 0.5,
@@ -464,7 +465,8 @@ def handle_message(event):
 
     print("GEMINI_TEXT:", response.text)
     print("GEMINI_LENGTH:", len(response.text) if response.text else 0)
-    
+    print("GEMINI_CANDIDATES:", response.candidates)
+
     reply_to_line(
         event,
         response.text if response.text else "目前沒有明確答案，請先拍照回報主管。"
