@@ -363,14 +363,6 @@ def handle_video_message(event):
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
 
-
-# =========================
-# 主訊息處理區
-# =========================
-
-@handler.add(MessageEvent, message=TextMessageContent)
-def handle_message(event):
-
     user_id = event.source.user_id
     user_message = event.message.text
 
