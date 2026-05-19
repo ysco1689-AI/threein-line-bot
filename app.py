@@ -1,6 +1,7 @@
 import os
 import json
 import tempfile
+import re
 import google.generativeai as genai
 import gspread
 
@@ -23,23 +24,11 @@ from linebot.v3.webhooks import (
     VideoMessageContent
 )
 
-# =========================
-# 建立 Flask 網頁伺服器
-# =========================
-
 app = Flask(__name__)
-
-# =========================
-# 全域快取資料
-# =========================
 
 recipe_cache = []
 users_cache = []
 qa_cache = []
-
-# =========================
-# Render 環境變數
-# =========================
 
 CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
 CHANNEL_SECRET = os.getenv("CHANNEL_SECRET")
@@ -47,57 +36,32 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
 
-# =========================
-# Gemini 初始化
-# =========================
-
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-2.5-flash")
-
-# =========================
-# LINE BOT 初始化
-# =========================
 
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-# =========================
-# Google Sheet 連線
-# =========================
 
 def get_google_client():
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-
-    service_account_info = json.loads(
-        GOOGLE_SERVICE_ACCOUNT_JSON
-    )
-
+    service_account_info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
     credentials = Credentials.from_service_account_info(
         service_account_info,
         scopes=scopes
     )
-
     return gspread.authorize(credentials)
 
-# =========================
-# 載入 Google Sheet
-# =========================
 
 def load_all_data():
     global recipe_cache, users_cache, qa_cache
 
     try:
         gc = get_google_client()
-
         spreadsheet = gc.open_by_key(SPREADSHEET_ID)
 
-        # 配方表
         recipe_cache = spreadsheet.sheet1.get_all_records()
-
-        # users 表
         users_cache = spreadsheet.worksheet("users").get_all_records()
-
-        # qa 表
         qa_cache = spreadsheet.worksheet("qa").get_all_records()
 
         print("Google Sheet 資料載入成功")
@@ -105,9 +69,6 @@ def load_all_data():
     except Exception as e:
         print("讀取 Google Sheet 失敗：", e)
 
-# =========================
-# 自動新增新使用者
-# =========================
 
 def add_new_user(user_id):
     global users_cache
@@ -133,14 +94,9 @@ def add_new_user(user_id):
 
     print("已自動新增使用者:", user_id)
 
-# =========================
-# 查詢使用者權限
-# =========================
 
 def get_user_role(user_id):
-    users = users_cache
-
-    for user in users:
+    for user in users_cache:
         if str(user.get("line_user_id", "")).strip() == user_id:
             return {
                 "role": str(user.get("role", "")).strip(),
@@ -154,9 +110,6 @@ def get_user_role(user_id):
         "status": "pending"
     }
 
-# =========================
-# LINE 回覆功能
-# =========================
 
 def reply_to_line(event, reply_text):
     with ApiClient(configuration) as api_client:
@@ -169,22 +122,55 @@ def reply_to_line(event, reply_text):
             )
         )
 
-# =========================
-# 搜尋配方
-# =========================
+
+def normalize_text(text):
+    return str(text).upper().replace(" ", "").replace("　", "").strip()
+
+
+def classify_message(user_message):
+    message = normalize_text(user_message)
+
+    recipe_keywords = [
+        "配方", "比例", "幾克", "幾公克", "多少克",
+        "原物料", "成本", "毛利", "煮法", "熬煮",
+        "仙草汁", "黑糖", "二砂", "冬瓜糖", "甘草",
+        "海鹽", "茶包"
+    ]
+
+    food_quality_keywords = [
+        "壞掉", "酸掉", "發酸", "怪味", "異味",
+        "出水", "太軟", "變色", "發霉", "異物",
+        "仙草凍正常嗎", "正常嗎", "能不能賣", "可不可以賣",
+        "茶湯混濁", "混濁", "沉澱", "結塊"
+    ]
+
+    qa_keywords = [
+        "封口機", "錯誤", "錯誤代碼", "卡膜", "封膜",
+        "封不起來", "封不緊", "漏杯", "杯膜", "機器",
+        "E01", "E02", "E03", "E04", "E05", "E06", "E07", "E08", "E09",
+        "客訴", "太甜", "太淡", "太苦", "沒味道", "味道不對"
+    ]
+
+    if any(word in user_message for word in recipe_keywords):
+        return "recipe"
+
+    if any(word in user_message for word in food_quality_keywords):
+        return "food_quality"
+
+    if any(word in user_message for word in qa_keywords):
+        return "qa"
+
+    if re.search(r"E\d{2}", message):
+        return "qa"
+
+    return "general"
+
 
 def find_recipe(user_message):
     records = recipe_cache
 
-    want_hot = any(
-        word in user_message
-        for word in ["熱", "熱的", "熱飲", "溫的"]
-    )
-
-    want_cold = any(
-        word in user_message
-        for word in ["冷", "冷的", "冷飲", "冰", "冰的"]
-    )
+    want_hot = any(word in user_message for word in ["熱", "熱的", "熱飲", "溫的"])
+    want_cold = any(word in user_message for word in ["冷", "冷的", "冷飲", "冰", "冰的"])
 
     matched_rows = []
 
@@ -200,127 +186,151 @@ def find_recipe(user_message):
     if want_hot:
         for row in matched_rows:
             temp = str(row.get("溫度", "")).strip()
-
             if temp in ["熱", "熱飲", "溫"]:
                 return row
 
     if want_cold:
         for row in matched_rows:
             temp = str(row.get("溫度", "")).strip()
-
             if temp in ["冷", "冷飲", "冰"]:
                 return row
 
     for row in matched_rows:
         temp = str(row.get("溫度", "")).strip()
-
         if temp in ["冷", "冷飲", "冰"]:
             return row
 
     return matched_rows[0]
 
-# =========================
-# 搜尋 QA 資料庫
-# =========================
 
 def find_qa_answer(user_message, role, status):
-    records = qa_cache
+    user_msg_norm = normalize_text(user_message)
 
-    for row in records:
-
-        keywords = str(
-            row.get("keywords", "")
-        ).split(",")
-
-        answer = str(
-            row.get("answer", "")
-        ).strip()
-
-        permission = str(
-            row.get("permission", "")
-        ).strip()
-
-        # =========================
-        # QA答案太短 → 視同無效
-        # =========================
+    for row in qa_cache:
+        keywords = str(row.get("keywords", "")).split(",")
+        answer = str(row.get("answer", "")).strip()
+        permission = str(row.get("permission", "")).strip()
 
         if len(answer) < 20:
             continue
 
-        # =========================
-        # keyword 太短 → 不參與匹配
-        # 避免「紅茶」「E05」亂命中
-        # =========================
+        matched = False
 
-        matched = any(
-            len(keyword.strip()) >= 3
-            and keyword.strip() in user_message
-            for keyword in keywords
-        )
+        for keyword in keywords:
+            kw = normalize_text(keyword)
+
+            if not kw:
+                continue
+
+            if re.fullmatch(r"E\d{2}", kw):
+                if kw in user_msg_norm:
+                    matched = True
+                    break
+
+            elif len(kw) >= 3 and kw in user_msg_norm:
+                matched = True
+                break
 
         if not matched:
             continue
 
-        # =========================
-        # public 權限
-        # =========================
-
         if permission == "public":
             return answer
 
-        # =========================
-        # franchisee 權限
-        # =========================
-
         if permission == "franchisee":
-
-            if (
-                status == "active"
-                and role in ["admin", "franchisee", "staff"]
-            ):
+            if status == "active" and role in ["admin", "franchisee", "staff"]:
                 return answer
-
             return "此問題需要加盟主或員工權限，請洽總部。"
 
-        # =========================
-        # admin 權限
-        # =========================
-
         if permission == "admin":
-
-            if (
-                status == "active"
-                and role == "admin"
-            ):
+            if status == "active" and role == "admin":
                 return answer
-
             return "此問題需要總部權限，請洽總部。"
 
-    # =========================
-    # 完全沒找到
-    # =========================
-
     return None
-# =========================
-# 敏感問題阻擋
-# =========================
 
-def is_sensitive_question(user_message):
-    sensitive_keywords = [
-        "配方", "比例", "成本", "毛利", "原物料",
-        "仙草汁", "黑糖", "二砂", "冬瓜糖",
-        "甘草", "海鹽", "茶包", "煮法",
-        "熬煮", "幾克", "幾公克", "多少克"
-    ]
 
-    return any(
-        word in user_message
-        for word in sensitive_keywords
+def ask_gemini_text(user_message, msg_type):
+    if msg_type == "food_quality":
+        prompt = f"""
+你是三入好棧現場店長助手。
+
+員工正在詢問食品或飲品品管問題。
+請用繁體中文回答，口氣像資深店長。
+
+回答規則：
+- 簡短直接
+- 控制在100字內
+- 安全優先
+- 疑似變質、異味、發霉、異物，一律建議先不要販售
+- 不回答配方比例、成本、毛利
+
+回答格式：
+1. 判斷：
+2. 現場先做：
+3. 是否可販售：
+4. 回報主管：
+
+員工問題：
+{user_message}
+"""
+    elif msg_type == "qa":
+        prompt = f"""
+你是三入好棧現場店長助手。
+
+員工正在詢問設備、客訴或現場SOP問題。
+請用繁體中文回答，口氣像資深店長。
+
+回答規則：
+- 簡短直接
+- 控制在100字內
+- 一定要給現場先做什麼
+- 若沒有明確資料，請根據現場經驗推測可能原因
+- 禁止危險拆機
+- 不回答配方比例、成本、毛利
+
+回答格式：
+1. 可能原因：
+2. 現場先做：
+3. 若還是異常：
+
+員工問題：
+{user_message}
+"""
+    else:
+        prompt = f"""
+你是三入好棧現場店長助手。
+
+請用繁體中文回答。
+回答對象是現場員工，不是客人。
+
+回答規則：
+- 像資深店長教員工
+- 簡短直接
+- 控制在100字內
+- 不回答配方比例、成本、毛利、未公開加盟資訊
+
+員工問題：
+{user_message}
+"""
+
+    response = model.generate_content(
+        prompt,
+        generation_config={
+            "temperature": 0.3,
+            "max_output_tokens": 500,
+            "top_p": 0.9,
+            "top_k": 40
+        }
     )
 
-# =========================
-# LINE webhook
-# =========================
+    reply_text = response.text if response.text else ""
+
+    if len(reply_text.strip()) < 20:
+        reply_text = "我目前判斷不完整，請補充機器型號、錯誤畫面或現場狀況。"
+
+    return reply_text
+
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -330,18 +340,13 @@ def callback():
         return "Missing signature", 400
 
     body = request.get_data(as_text=True)
-
     handler.handle(body, signature)
 
     return "OK"
 
-# =========================
-# 圖片訊息處理（Gemini Vision）
-# =========================
 
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image_message(event):
-
     message_id = event.message.id
 
     with ApiClient(configuration) as api_client:
@@ -349,9 +354,7 @@ def handle_image_message(event):
         image_content = line_bot_blob_api.get_message_content(message_id)
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_file:
-
         temp_file.write(image_content)
-
         image_path = temp_file.name
 
     image_file = genai.upload_file(image_path)
@@ -360,31 +363,20 @@ def handle_image_message(event):
 你是三入好棧現場店長助手，負責看圖片判斷現場問題。
 
 請根據圖片內容自行判斷類型：
-1. 如果是封口機、機器、錯誤碼 → 回設備排除方式
-2. 如果是仙草凍、茶湯、飲料、原料 → 回食品品管判斷
-3. 如果看不清楚 → 請員工補拍重點
+1. 如果是封口機、機器、錯誤碼，回設備排除方式
+2. 如果是仙草凍、茶湯、飲料、原料，回食品品管判斷
+3. 如果看不清楚，請員工補拍重點
 
 回答規則：
 - 使用繁體中文
 - 不要只描述圖片
 - 要直接告訴員工怎麼處理
 - 不要廢話
-- 不要說「我無法判斷」就結束
 - 若疑似食品異常，先以安全為主，建議暫停販售
 - 不回答配方比例、成本、內部機密
 - 控制在150字內
 
-食品判斷重點：
-- 是否出水
-- 是否過軟
-- 是否變色
-- 是否有異常氣泡
-- 是否有發霉、異物
-- 是否看起來不新鮮
-- 是否需要丟棄或回報主管
-
 回答格式：
-
 【判斷】
 【現場先做】
 【是否可販售】
@@ -395,7 +387,7 @@ def handle_image_message(event):
         [prompt, image_file],
         generation_config={
             "temperature": 0.3,
-            "max_output_tokens": 700,
+            "max_output_tokens": 500,
             "top_p": 0.9,
             "top_k": 40
         }
@@ -404,28 +396,22 @@ def handle_image_message(event):
     reply_text = (
         response.text
         if response.text
-        else "圖片判斷不清楚，請補拍錯誤畫面。"
+        else "圖片判斷不清楚，請補拍錯誤畫面或問題位置。"
     )
 
     reply_to_line(event, reply_text)
-# =========================
-# 影片訊息處理
-# =========================
+
 
 @handler.add(MessageEvent, message=VideoMessageContent)
 def handle_video_message(event):
     reply_to_line(
         event,
-        "我收到影片了，請再補一句問題，例如：機器一直轉、封口機E07、封膜卡住。這樣我才能判斷處理方式。"
+        "我收到影片了，請再補一句問題，例如：機器一直轉、封口機E07、封膜卡住。"
     )
 
-# =========================
-# 主訊息處理區
-# =========================
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
-
     user_id = event.source.user_id
     user_message = event.message.text
 
@@ -433,46 +419,31 @@ def handle_message(event):
     print("USER_MESSAGE:", user_message)
 
     user_info = get_user_role(user_id)
-
     role = user_info["role"]
     status = user_info["status"]
 
     print("ROLE:", role)
     print("STATUS:", status)
 
-    # =========================
-    # 黑名單阻擋
-    # =========================
-
     if status == "blocked" or role == "blocked":
         reply_to_line(event, "此帳號目前無法使用本系統，請洽總部。")
         return
 
-    # =========================
-    # 第一優先：QA / SOP / 客訴
-    # =========================
+    msg_type = classify_message(user_message)
 
-    qa_answer = find_qa_answer(user_message, role, status)
+    print("MSG_TYPE:", msg_type)
 
-    if qa_answer:
-        reply_to_line(event, qa_answer)
-        return
+    if msg_type == "recipe":
+        recipe = find_recipe(user_message)
 
-    # =========================
-    # 第二優先：查配方
-    # =========================
+        if not recipe:
+            reply_to_line(
+                event,
+                "此問題涉及內部資料，目前資料庫沒有明確答案，請洽總部確認。"
+            )
+            return
 
-    allowed_recipe_roles = [
-        "admin",
-        "franchisee",
-        "staff"
-    ]
-
-    recipe = find_recipe(user_message)
-
-    if recipe:
-
-        if status != "active" or role not in allowed_recipe_roles:
+        if status != "active" or role not in ["admin", "franchisee", "staff"]:
             reply_to_line(
                 event,
                 "此帳號目前沒有查詢配方權限，請洽總部確認。"
@@ -480,7 +451,6 @@ def handle_message(event):
             return
 
         product_name = recipe.get("品項", "此品項")
-
         recipe_lines = []
 
         for key, value in recipe.items():
@@ -495,84 +465,25 @@ def handle_message(event):
         reply_to_line(event, reply_text)
         return
 
-    # =========================
-    # 第三優先：敏感問題阻擋
-    # =========================
+    if msg_type == "qa":
+        qa_answer = find_qa_answer(user_message, role, status)
 
-    if is_sensitive_question(user_message):
-        reply_to_line(
-            event,
-            "此問題涉及內部資料，目前資料庫沒有明確答案，請洽總部確認。"
-        )
+        if qa_answer:
+            reply_to_line(event, qa_answer)
+            return
+
+        reply_text = ask_gemini_text(user_message, msg_type)
+        reply_to_line(event, reply_text)
         return
 
-    # =========================
-    # 最後才交給 Gemini
-    # QA 沒資料時，提供現場排除建議
-    # =========================
+    if msg_type == "food_quality":
+        reply_text = ask_gemini_text(user_message, msg_type)
+        reply_to_line(event, reply_text)
+        return
 
-    prompt = f"""
-你是三入好棧現場店長助手。
-
-請用繁體中文回答。
-回答對象是現場員工，不是客人。
-
-回答規則：
-- 像資深店長教員工
-- 設備問題請用3到5點條列
-- 每個項目請用1到2句完整說明
-- 不可以只回答開頭或半句
-- 不要只回代碼或單字
-- 回答簡短直接
-- 控制在80字內
-- 一定要給「現場先做什麼」
-- 若沒有明確資料，請根據現場經驗推測可能原因
-- 禁止回答配方比例、成本、毛利、未公開加盟資訊、危險拆機
-
-回答格式：
-1. 可能原因：
-2. 現場先做：
-3. 檢查重點：
-4. 如果還是異常：
-5. 回報主管：
-
-
-員工問題：
-{user_message}
-"""
-
-    print("HIT_GEMINI")
-
-    response = model.generate_content(
-        prompt,
-        generation_config={
-            "temperature": 0.3,
-            "max_output_tokens": 700,
-            "top_p": 0.9,
-            "top_k": 40
-        }
-    )
-
-    reply_text = response.text if response.text else ""
-
-    print("GEMINI_TEXT:", reply_text)
-    print("GEMINI_LENGTH:", len(reply_text))
-    print("GEMINI_CANDIDATES:", response.candidates)
-
-# =========================
-# 防止 Gemini 完全沒回答
-# =========================
-
-    if len(reply_text.strip()) < 20:
-        reply_text = (
-            "我目前判斷不完整，請補充機器型號、錯誤畫面或現場狀況。"
-        )
-
+    reply_text = ask_gemini_text(user_message, "general")
     reply_to_line(event, reply_text)
-    
-# =========================
-# 啟動時先載入 Google Sheet
-# =========================
+
 
 load_all_data()
 
