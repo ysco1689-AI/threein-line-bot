@@ -450,8 +450,8 @@ def handle_message(event):
     response = model.generate_content(
         prompt,
         generation_config={
-            "temperature": 0.3,
-            "max_output_tokens": 300
+            "temperature": 0.5,
+            "max_output_tokens": 450
         }
     )
 
