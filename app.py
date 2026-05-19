@@ -322,8 +322,12 @@ def handle_message(event):
     qa_answer = find_qa_answer(user_message, role, status)
 
     if qa_answer:
-        reply_to_line(event, qa_answer)
-        return
+        
+        # QA答案太短 → 視同沒答案
+        if len(qa_answer.strip()) >= 20:
+
+            reply_to_line(event, qa_answer)
+            return
 
     # =========================
     # 第二優先：查配方
