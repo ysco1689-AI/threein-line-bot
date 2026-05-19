@@ -382,8 +382,8 @@ def handle_image_message(event):
     response = model.generate_content(
         [prompt, image_file],
         generation_config={
-            "temperature": 0.5,
-            "max_output_tokens": 700,
+            "temperature": 0.3,
+            "max_output_tokens": 500,
             "top_p": 0.9,
             "top_k": 40
         }
