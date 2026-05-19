@@ -447,30 +447,44 @@ def handle_message(event):
 4. 如果還是異常：
 5. 回報主管：
 
+
 員工問題：
 {user_message}
 """
 
     print("HIT_GEMINI")
 
-        response = model.generate_content(
+    response = model.generate_content(
         prompt,
         generation_config={
-            "temperature": 0.5,
+            "temperature": 0.3,
             "max_output_tokens": 700,
             "top_p": 0.9,
             "top_k": 40
         }
     )
 
-    print("GEMINI_TEXT:", response.text)
-    print("GEMINI_LENGTH:", len(response.text) if response.text else 0)
+    reply_text = response.text if response.text else ""
+
+    print("GEMINI_TEXT:", reply_text)
+    print("GEMINI_LENGTH:", len(reply_text))
     print("GEMINI_CANDIDATES:", response.candidates)
 
-    reply_to_line(
-        event,
-        response.text if response.text else "目前沒有明確答案，請先拍照回報主管。"
-    )
+    # =========================
+    # 防止 Gemini 短答
+    # =========================
+
+    if len(reply_text.strip()) < 80:
+        reply_text = (
+            "這個錯誤代碼目前資料庫沒有明確定義，先用基本排除法處理：\n"
+            "1. 先重開封口機，等待機器重新啟動。\n"
+            "2. 檢查封膜是否裝反、歪掉、卡膜或沒有拉順。\n"
+            "3. 檢查感應區與加熱區是否有髒污、殘膜或異物。\n"
+            "4. 若重開後仍跳錯誤，先停機不要硬用。\n"
+            "5. 拍下錯誤畫面與機器狀況，回報主管處理。"
+        )
+
+    reply_to_line(event, reply_text)
     
 # =========================
 # 啟動時先載入 Google Sheet
