@@ -37,10 +37,7 @@ GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
 
 genai.configure(api_key=GEMINI_API_KEY)
-
-# ✅ 改回 gemini-2.0-flash：速度最快、不會被 Render 30秒 timeout 切斷
-# gemini-2.5-flash / 3.5-flash 思考時間長，容易在 Render free tier 被砍掉
-model = genai.GenerativeModel("gemini-2.0-flash")
+model = genai.GenerativeModel("gemini-2.5-flash")
 
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
@@ -149,7 +146,6 @@ def classify_message(user_message):
         "茶湯混濁", "混濁", "沉澱", "結塊"
     ]
 
-    # ✅ 修正：「正常嗎」只有搭配食品詞才算食安，避免誤判
     food_quality_context_keywords = ["仙草凍", "茶湯", "糖水", "原料", "飲品", "仙草"]
 
     qa_keywords = [
@@ -312,13 +308,11 @@ def ask_gemini_text(user_message, msg_type):
 員工問題：{user_message}"""
 
     try:
-        # ✅ 拿掉 temperature/top_p/top_k，只設 max_output_tokens
-        # 這些參數在 gemini-2.0-flash 會干擾輸出完整度
         response = model.generate_content(
             prompt,
-            generation_config=genai.types.GenerationConfig(
-                max_output_tokens=2048,
-            )
+            generation_config={
+                "max_output_tokens": 2048,
+            }
         )
 
         reply_text = response.text if response.text else ""
@@ -362,7 +356,6 @@ def handle_image_message(event):
 
         image_file = genai.upload_file(image_path)
 
-        # ✅ prompt 改成要求給完整現場步驟
         prompt = """你是三入好棧的資深店長，有十年封口機與飲料店現場經驗。
 
 請根據圖片判斷現場問題，直接告訴員工怎麼處理。
@@ -378,12 +371,11 @@ def handle_image_message(event):
 - 禁止建議拆解馬達、電路板、高壓零件等電氣核心
 - 不回答配方比例、成本、內部資訊"""
 
-        # ✅ 圖片也拿掉 temperature/top_p/top_k，只設 max_output_tokens
         response = model.generate_content(
             [prompt, image_file],
-            generation_config=genai.types.GenerationConfig(
-                max_output_tokens=2048,
-            )
+            generation_config={
+                "max_output_tokens": 2048,
+            }
         )
 
         reply_text = (
@@ -397,7 +389,6 @@ def handle_image_message(event):
         reply_text = "圖片處理發生問題，請重新傳送或描述狀況。"
 
     finally:
-        # ✅ 無論成功失敗都清除暫存圖片，避免 Render 磁碟累積
         if image_path and os.path.exists(image_path):
             os.remove(image_path)
 
@@ -427,7 +418,6 @@ def handle_message(event):
     print("ROLE:", role)
     print("STATUS:", status)
 
-    # ✅ 加入 /reload 指令，讓 admin 可以即時重載 Google Sheet 快取
     if user_message.strip() == "/reload":
         if user_info["role"] == "admin" and user_info["status"] == "active":
             load_all_data()
