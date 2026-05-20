@@ -37,7 +37,10 @@ GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-2.5-flash")
+
+# ✅ 改回 gemini-2.0-flash：速度最快、不會被 Render 30秒 timeout 切斷
+# gemini-2.5-flash / 3.5-flash 思考時間長，容易在 Render free tier 被砍掉
+model = genai.GenerativeModel("gemini-2.0-flash")
 
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
@@ -124,6 +127,7 @@ def reply_to_line(event, reply_text):
     except Exception as e:
         print(f"[ERROR] reply_to_line 失敗: {e}")
 
+
 def normalize_text(text):
     return str(text).upper().replace(" ", "").replace("　", "").strip()
 
@@ -141,9 +145,12 @@ def classify_message(user_message):
     food_quality_keywords = [
         "壞掉", "酸掉", "發酸", "怪味", "異味",
         "出水", "太軟", "變色", "發霉", "異物",
-        "仙草凍正常嗎", "正常嗎", "能不能賣", "可不可以賣",
+        "能不能賣", "可不可以賣",
         "茶湯混濁", "混濁", "沉澱", "結塊"
     ]
+
+    # ✅ 修正：「正常嗎」只有搭配食品詞才算食安，避免誤判
+    food_quality_context_keywords = ["仙草凍", "茶湯", "糖水", "原料", "飲品", "仙草"]
 
     qa_keywords = [
         "封口機", "錯誤", "錯誤代碼", "卡膜", "封膜",
@@ -156,6 +163,12 @@ def classify_message(user_message):
         return "recipe"
 
     if any(word in user_message for word in food_quality_keywords):
+        return "food_quality"
+
+    if "正常嗎" in user_message and any(word in user_message for word in food_quality_context_keywords):
+        return "food_quality"
+
+    if "仙草凍正常嗎" in user_message:
         return "food_quality"
 
     if any(word in user_message for word in qa_keywords):
@@ -253,77 +266,69 @@ def find_qa_answer(user_message, role, status):
 
 def ask_gemini_text(user_message, msg_type):
     if msg_type == "food_quality":
-        prompt = f"""
-你是三入好棧現場店長助手。
+        prompt = f"""你是三入好棧的資深店長，有十年飲料店現場經驗。
 
-員工正在詢問食品或飲品品管問題。
-請用繁體中文回答，口氣像資深店長。
+員工正在詢問食品或飲品品管問題，請用繁體中文直接回答。
 
-回答規則：
-- 簡單易懂
-- 控制在200字內
-- 安全優先
-- 疑似變質、異味、發霉、異物，一律建議先不要販售
-- 直接告訴員工「先做什麼」
+回答風格：
+- 像LINE訊息，口氣直接像資深店長
+- 先講「現在馬上做什麼」
+- 給具體判斷標準與處理步驟
+- 安全優先：疑似變質、異味、發霉、異物，一律先暫停販售
+- 說明什麼情況可以繼續賣、什麼情況要丟掉
+- 控制在250字內，用數字或換行區隔步驟
 - 不回答配方比例、成本、毛利
-- 不要使用固定標題格式
 
-員工問題：
-{user_message}
-"""
+員工問題：{user_message}"""
+
     elif msg_type == "qa":
-        prompt = f"""
-你是三入好棧的資深店長，有十年封口機與飲料店現場經驗。
+        prompt = f"""你是三入好棧的資深店長，有十年封口機與飲料店現場經驗。
 
-員工正在詢問設備、客訴或現場SOP問題，請用繁體中文回答。
+員工正在詢問設備、客訴或現場SOP問題，請用繁體中文直接回答。
 
 回答風格：
 - 像LINE訊息，口氣直接像資深店長
 - 先講「現在馬上做什麼」，再講原因
-- 給具體動作步驟，不要只說「聯絡廠商」或「重開機」
-- 如果有多個可能原因，請照順序排列（最常見的先）
-- 如果有應急替代方案（例如高峰期救火做法），也要說
-- 控制在300字內
-- 不要使用固定標題格式，用數字或換行即可
-
-禁止事項：
-- 禁止拆解馬達、電路板、高壓零件等電氣核心
+- 給具體動作步驟，照順序排列（最常見原因優先）
+- 不要只說「重開機」或「聯絡廠商」，要給實際排除步驟
+- 如果有高峰期應急替代方案，也要補充說明
+- 控制在300字內，用數字或換行區隔步驟
+- 禁止建議拆解馬達、電路板、高壓零件等電氣核心
 - 不回答配方比例、成本、毛利
 
-員工問題：
-{user_message}
-"""
+員工問題：{user_message}"""
+
     else:
-        prompt = f"""
-你是三入好棧現場店長助手。
+        prompt = f"""你是三入好棧的資深店長。
 
-請用繁體中文回答。
-回答對象是現場員工，不是客人。
+員工有問題請教，請用繁體中文直接回答。
 
-回答規則：
-- 像資深店長教員工
-- 簡短直接
+回答風格：
+- 像資深店長教員工，口氣直接
+- 給具體建議，不要廢話
 - 控制在200字內
 - 不回答配方比例、成本、毛利、未公開加盟資訊
 
-員工問題：
-{user_message}
-"""
+員工問題：{user_message}"""
 
-    response = model.generate_content(
-        prompt,
-        generation_config={
-            "temperature": 0.3,
-            "max_output_tokens": 1024,
-            "top_p": 0.9,
-            "top_k": 40
-        }
-    )
+    try:
+        # ✅ 拿掉 temperature/top_p/top_k，只設 max_output_tokens
+        # 這些參數在 gemini-2.0-flash 會干擾輸出完整度
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                max_output_tokens=2048,
+            )
+        )
 
-    reply_text = response.text if response.text else ""
+        reply_text = response.text if response.text else ""
 
-    if len(reply_text.strip()) < 20:
-        reply_text = "我目前判斷不完整，請補充機器型號、錯誤畫面或現場狀況。"
+        if len(reply_text.strip()) < 20:
+            reply_text = "我目前判斷不完整，請補充機器型號、錯誤畫面或現場狀況。"
+
+    except Exception as e:
+        print(f"[ERROR] ask_gemini_text 失敗: {e}")
+        reply_text = "目前系統忙碌，請稍後再試或直接描述問題。"
 
     return reply_text
 
@@ -357,31 +362,28 @@ def handle_image_message(event):
 
         image_file = genai.upload_file(image_path)
 
-        prompt = """
-你是三入好棧的資深店長，有十年封口機與飲料店現場經驗。
+        # ✅ prompt 改成要求給完整現場步驟
+        prompt = """你是三入好棧的資深店長，有十年封口機與飲料店現場經驗。
 
-請根據圖片內容判斷現場問題，並直接告訴員工怎麼處理。
+請根據圖片判斷現場問題，直接告訴員工怎麼處理。
 
-回答規則：
+回答風格：
 - 使用繁體中文，像LINE訊息
 - 先說「現在馬上做什麼」
 - 給具體動作步驟，照順序排列（最常見原因優先）
-- 如果是封口機錯誤代碼，說明可能原因與逐步排除方式
-- 如果有高峰期應急做法，也要補充
-- 控制在300字內，不要使用固定標題格式
+- 如果是封口機錯誤代碼，說明可能原因與完整逐步排除方式
+- 如果有高峰期應急替代方案（例如切換模式繼續出杯），也要補充
+- 控制在300字內，用數字或換行區隔步驟
 - 疑似食品異常時，先建議暫停販售
-- 禁止拆解馬達、電路板等電氣核心
-- 不回答配方比例、成本、內部資訊
-"""
+- 禁止建議拆解馬達、電路板、高壓零件等電氣核心
+- 不回答配方比例、成本、內部資訊"""
 
+        # ✅ 圖片也拿掉 temperature/top_p/top_k，只設 max_output_tokens
         response = model.generate_content(
             [prompt, image_file],
-            generation_config={
-                "temperature": 0.3,
-                "max_output_tokens": 1024,
-                "top_p": 0.9,
-                "top_k": 40
-            }
+            generation_config=genai.types.GenerationConfig(
+                max_output_tokens=2048,
+            )
         )
 
         reply_text = (
@@ -395,6 +397,7 @@ def handle_image_message(event):
         reply_text = "圖片處理發生問題，請重新傳送或描述狀況。"
 
     finally:
+        # ✅ 無論成功失敗都清除暫存圖片，避免 Render 磁碟累積
         if image_path and os.path.exists(image_path):
             os.remove(image_path)
 
@@ -423,6 +426,15 @@ def handle_message(event):
 
     print("ROLE:", role)
     print("STATUS:", status)
+
+    # ✅ 加入 /reload 指令，讓 admin 可以即時重載 Google Sheet 快取
+    if user_message.strip() == "/reload":
+        if user_info["role"] == "admin" and user_info["status"] == "active":
+            load_all_data()
+            reply_to_line(event, "✅ 資料已重新載入完成")
+        else:
+            reply_to_line(event, "此指令需要 admin 權限，請洽總部。")
+        return
 
     if status == "blocked" or role == "blocked":
         reply_to_line(event, "此帳號目前無法使用本系統，請洽總部。")
