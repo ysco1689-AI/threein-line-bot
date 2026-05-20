@@ -112,16 +112,17 @@ def get_user_role(user_id):
 
 
 def reply_to_line(event, reply_text):
-    with ApiClient(configuration) as api_client:
-        line_bot_api = MessagingApi(api_client)
-
-        line_bot_api.reply_message(
-            ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[TextMessage(text=reply_text)]
+    try:
+        with ApiClient(configuration) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=reply_text)]
+                )
             )
-        )
-
+    except Exception as e:
+        print(f"[ERROR] reply_to_line 失敗: {e}")
 
 def normalize_text(text):
     return str(text).upper().replace(" ", "").replace("　", "").strip()
@@ -260,7 +261,7 @@ def ask_gemini_text(user_message, msg_type):
 
 回答規則：
 - 簡單易懂
-- 控制在400字內
+- 控制在200字內
 - 安全優先
 - 疑似變質、異味、發霉、異物，一律建議先不要販售
 - 直接告訴員工「先做什麼」
@@ -279,7 +280,7 @@ def ask_gemini_text(user_message, msg_type):
 
 回答規則：
 - 簡單易懂
-- 控制在400字內
+- 控制在200字內
 - 像LINE訊息
 - 先講現場立刻要做什麼
 - 若沒有明確資料，請根據現場經驗推測可能原因
@@ -300,7 +301,7 @@ def ask_gemini_text(user_message, msg_type):
 回答規則：
 - 像資深店長教員工
 - 簡短直接
-- 控制在400字內
+- 控制在200字內
 - 不回答配方比例、成本、毛利、未公開加盟資訊
 
 員工問題：
@@ -311,7 +312,7 @@ def ask_gemini_text(user_message, msg_type):
         prompt,
         generation_config={
             "temperature": 0.3,
-            "max_output_tokens": 500,
+            "max_output_tokens": 1024,
             "top_p": 0.9,
             "top_k": 40
         }
@@ -341,18 +342,20 @@ def callback():
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image_message(event):
     message_id = event.message.id
+    image_path = None
 
-    with ApiClient(configuration) as api_client:
-        line_bot_blob_api = MessagingApiBlob(api_client)
-        image_content = line_bot_blob_api.get_message_content(message_id)
+    try:
+        with ApiClient(configuration) as api_client:
+            line_bot_blob_api = MessagingApiBlob(api_client)
+            image_content = line_bot_blob_api.get_message_content(message_id)
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_file:
-        temp_file.write(image_content)
-        image_path = temp_file.name
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_file:
+            temp_file.write(image_content)
+            image_path = temp_file.name
 
-    image_file = genai.upload_file(image_path)
+        image_file = genai.upload_file(image_path)
 
-    prompt = """
+        prompt = """
 你是三入好棧現場店長助手。
 
 請根據圖片內容判斷現場問題，
@@ -372,28 +375,36 @@ def handle_image_message(event):
 - 使用繁體中文
 - 像LINE店長
 - 直接講述問題,並提出解決方案
-- 控制在400字內
+- 控制在200字內
 - 不要描述圖片
 - 不要使用固定標題格式
 - 疑似食品異常時，先建議暫停販售
 - 不回答配方比例、成本、內部資訊
 """
 
-    response = model.generate_content(
-        [prompt, image_file],
-        generation_config={
-            "temperature": 0.3,
-            "max_output_tokens": 500,
-            "top_p": 0.9,
-            "top_k": 40
-        }
-    )
+        response = model.generate_content(
+            [prompt, image_file],
+            generation_config={
+                "temperature": 0.3,
+                "max_output_tokens": 1024,
+                "top_p": 0.9,
+                "top_k": 40
+            }
+        )
 
-    reply_text = (
-        response.text
-        if response.text
-        else "圖片判斷不清楚，請補拍錯誤畫面或問題位置。"
-    )
+        reply_text = (
+            response.text
+            if response.text
+            else "圖片判斷不清楚，請補拍錯誤畫面或問題位置。"
+        )
+
+    except Exception as e:
+        print(f"[ERROR] handle_image_message 失敗: {e}")
+        reply_text = "圖片處理發生問題，請重新傳送或描述狀況。"
+
+    finally:
+        if image_path and os.path.exists(image_path):
+            os.remove(image_path)
 
     reply_to_line(event, reply_text)
 
