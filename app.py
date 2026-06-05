@@ -40,6 +40,7 @@ CHANNEL_SECRET = os.getenv("CHANNEL_SECRET")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
+SHIFT_SPREADSHEET_ID = os.getenv("SHIFT_SPREADSHEET_ID", SPREADSHEET_ID)
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-2.5-flash")
@@ -150,6 +151,11 @@ def get_spreadsheet():
     return gc.open_by_key(SPREADSHEET_ID)
 
 
+def get_shift_spreadsheet():
+    gc = get_google_client()
+    return gc.open_by_key(SHIFT_SPREADSHEET_ID)
+
+
 def normalize_date_text(value):
     text = str(value).strip()
     if not text:
@@ -204,7 +210,7 @@ def get_records_by_header(sheet, required_header):
 
 def find_today_shift(user_id):
     today = today_text()
-    spreadsheet = get_spreadsheet()
+    spreadsheet = get_shift_spreadsheet()
     sheet = spreadsheet.worksheet("排班表")
     rows = get_records_by_header(sheet, "LINE_ID")
 
@@ -234,7 +240,7 @@ def find_today_shift(user_id):
 
 
 def write_shift_confirmation(user_id, shift):
-    spreadsheet = get_spreadsheet()
+    spreadsheet = get_shift_spreadsheet()
     sheet = spreadsheet.worksheet("確認紀錄")
     sheet.append_row([
         today_text(),
