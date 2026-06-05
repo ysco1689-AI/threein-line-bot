@@ -4,3 +4,5 @@ line-bot-sdk
 google-generativeai
 gspread
 google-auth
+requests
+pillow
