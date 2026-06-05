@@ -566,6 +566,38 @@ def callback():
     return "OK"
 
 
+@app.route("/setup-richmenu", methods=["GET"])
+def setup_richmenu_route():
+    admin_key = os.getenv("ADMIN_SETUP_KEY")
+    request_key = request.args.get("key", "")
+
+    if not admin_key:
+        return "ADMIN_SETUP_KEY is not configured", 403
+
+    if request_key != admin_key:
+        return "Forbidden", 403
+
+    try:
+        from setup_richmenu import (
+            create_rich_menu,
+            create_richmenu_image,
+            require_token,
+            set_default_rich_menu,
+            upload_rich_menu_image,
+        )
+
+        require_token()
+        image_path = create_richmenu_image()
+        rich_menu_id = create_rich_menu()
+        upload_rich_menu_image(rich_menu_id, image_path)
+        set_default_rich_menu(rich_menu_id)
+        return f"Rich Menu 建立完成：{rich_menu_id}", 200
+
+    except Exception as e:
+        print("[ERROR] setup-richmenu 失敗:", e)
+        return f"Rich Menu 建立失敗：{e}", 500
+
+
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image_message(event):
     message_id = event.message.id
