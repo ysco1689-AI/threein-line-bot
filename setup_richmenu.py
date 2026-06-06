@@ -1,7 +1,7 @@
+import argparse
 import os
 from pathlib import Path
 
-import requests
 from PIL import Image, ImageDraw, ImageFont
 
 
@@ -10,12 +10,12 @@ RICH_MENU_IMAGE_PATH = Path(__file__).with_name("richmenu.png")
 
 
 RICH_MENU_AREAS = [
-    ("✅ 確認檔期", "action=confirm_shift", 0, 0),
-    ("🥤 杯數回報", "action=report_cups", 400, 0),
-    ("📦 餘料回報", "action=report_materials", 800, 0),
-    ("💰 費用支出", "action=report_expense", 0, 405),
-    ("🚗 里程回報", "action=report_mileage", 400, 405),
-    ("📋 事件紀錄", "action=report_event", 800, 405),
+    ("確認檔期", "action=confirm_shift", 0, 0),
+    ("杯數回報", "action=report_cups", 400, 0),
+    ("餘料回報", "action=report_materials", 800, 0),
+    ("費用支出", "action=report_expense", 0, 405),
+    ("里程回報", "action=report_mileage", 400, 405),
+    ("事件紀錄", "action=report_event", 800, 405),
 ]
 
 
@@ -26,8 +26,9 @@ def require_token():
 
 def load_font(size):
     font_candidates = [
-        "C:/Windows/Fonts/msjh.ttc",
         "C:/Windows/Fonts/msjhbd.ttc",
+        "C:/Windows/Fonts/msjh.ttc",
+        str(Path(__file__).with_name("NotoSansTC-Bold.ttf")),
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     ]
@@ -36,7 +37,11 @@ def load_font(size):
         if Path(font_path).exists():
             return ImageFont.truetype(font_path, size)
 
-    return ImageFont.load_default()
+    raise RuntimeError(
+        "找不到可顯示繁體中文的字型。請在 Windows 本機執行 "
+        "`python setup_richmenu.py --generate-only --regenerate`，"
+        "再把產生的 richmenu.png 上傳到 GitHub。"
+    )
 
 
 def draw_centered_text(draw, box, text, font, fill):
@@ -49,28 +54,31 @@ def draw_centered_text(draw, box, text, font, fill):
     draw.multiline_text((x, y), text, font=font, fill=fill, spacing=8, align="center")
 
 
-def create_richmenu_image():
+def create_richmenu_image(force=False):
+    if RICH_MENU_IMAGE_PATH.exists() and not force:
+        return RICH_MENU_IMAGE_PATH
+
     width, height = 1200, 810
     cell_width, cell_height = 400, 405
     image = Image.new("RGB", (width, height), "#f7faf7")
     draw = ImageDraw.Draw(image)
-    title_font = load_font(42)
-    small_font = load_font(24)
+    title_font = load_font(76)
 
     colors = ["#edf7ed", "#fff8e5", "#edf4ff", "#fff0f0", "#effaf8", "#f5f1ff"]
 
     for index, (label, _data, x, y) in enumerate(RICH_MENU_AREAS):
         box = (x, y, x + cell_width, y + cell_height)
         draw.rectangle(box, fill=colors[index], outline="#263238", width=3)
-        draw_centered_text(draw, box, label.replace(" ", "\n"), title_font, "#263238")
+        draw_centered_text(draw, box, label, title_font, "#263238")
 
     draw.rectangle((0, 0, width - 1, height - 1), outline="#263238", width=5)
-    draw.text((24, height - 42), "三入好棧 檔期回報系統", font=small_font, fill="#455a64")
     image.save(RICH_MENU_IMAGE_PATH, "PNG")
     return RICH_MENU_IMAGE_PATH
 
 
 def create_rich_menu():
+    import requests
+
     headers = {
         "Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}",
         "Content-Type": "application/json",
@@ -99,6 +107,8 @@ def create_rich_menu():
 
 
 def upload_rich_menu_image(rich_menu_id, image_path):
+    import requests
+
     headers = {
         "Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}",
         "Content-Type": "image/png",
@@ -114,6 +124,8 @@ def upload_rich_menu_image(rich_menu_id, image_path):
 
 
 def set_default_rich_menu(rich_menu_id):
+    import requests
+
     headers = {"Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}"}
     response = requests.post(
         f"https://api.line.me/v2/bot/user/all/richmenu/{rich_menu_id}",
@@ -124,13 +136,30 @@ def set_default_rich_menu(rich_menu_id):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--generate-only",
+        action="store_true",
+        help="只產生 richmenu.png，不呼叫 LINE API",
+    )
+    parser.add_argument(
+        "--regenerate",
+        action="store_true",
+        help="強制重新產生 richmenu.png",
+    )
+    args = parser.parse_args()
+
+    image_path = create_richmenu_image(force=args.regenerate)
+    print("Rich Menu 圖片完成:", image_path)
+
+    if args.generate_only:
+        return
+
     require_token()
-    image_path = create_richmenu_image()
     rich_menu_id = create_rich_menu()
     upload_rich_menu_image(rich_menu_id, image_path)
     set_default_rich_menu(rich_menu_id)
     print("Rich Menu 建立完成:", rich_menu_id)
-    print("圖片檔案:", image_path)
 
 
 if __name__ == "__main__":
