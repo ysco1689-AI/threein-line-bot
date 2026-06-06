@@ -2102,24 +2102,35 @@ def parse_ai_text_fallback(text, result_type):
     content = str(text or "").strip()
     if result_type == "cups":
         match = re.search(
-            r"(?:總杯數|杯數|共計|合計)\D{0,12}([1-9]\d{0,5})",
+            r'(?:"?cups"?\s*:|總杯數|杯數|共計|合計)'
+            r"\D{0,12}([1-9]\d{0,5})",
             content
         )
         if match:
             return {"cups": int(match.group(1)), "confidence": 0.5, "note": "文字備援擷取"}
 
     if result_type == "expense":
-        match = re.search(
-            r"(?:總額|總計|應付|實付|金額|合計)\D{0,15}"
-            r"(?:NT\$|NTD|\$)?\s*([\d,]+(?:\.\d{1,2})?)",
+        amount_match = re.search(
+            r'(?:"?amount"?\s*:|總額|總計|應付|實付|金額|合計)\D{0,15}'
+            r"(?:NT\$|NTD|\$)?\s*"
+            r"((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?)",
             content,
             flags=re.IGNORECASE
         )
-        if match:
+        if amount_match:
+            description_match = re.search(
+                r'"description"\s*:\s*"([^"\r\n]{1,100})',
+                content,
+                flags=re.IGNORECASE
+            )
             return {
-                "description": "收據支出（待確認）",
-                "amount": match.group(1),
-                "note": "文字備援擷取",
+                "description": (
+                    description_match.group(1).strip()
+                    if description_match
+                    else "收據支出（待確認）"
+                ),
+                "amount": amount_match.group(1),
+                "note": "不完整 JSON 備援擷取",
                 "confidence": 0.5
             }
 
@@ -2162,10 +2173,15 @@ def analyze_image_as_json(image_path, prompt, result_type):
         return parse_ai_json(retry_text)
     except Exception as second_error:
         print("[AI] 第二次 JSON 解析失敗:", second_error)
-        return parse_ai_text_fallback(
-            retry_text or raw_text,
-            result_type
-        )
+        fallback_errors = []
+        for fallback_text in (retry_text, raw_text):
+            if not fallback_text:
+                continue
+            try:
+                return parse_ai_text_fallback(fallback_text, result_type)
+            except Exception as fallback_error:
+                fallback_errors.append(str(fallback_error))
+        raise ValueError("；".join(fallback_errors) or "AI 回應無法擷取")
 
 
 def handle_cup_photo_result(event, user_id, image_path, message_id):
