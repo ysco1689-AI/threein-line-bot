@@ -1987,15 +1987,45 @@ def richmenu_preview_route():
 
 def parse_ai_json(text):
     cleaned = str(text or "").strip()
+    if not cleaned:
+        raise ValueError("AI 回傳空白內容")
     cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s*```$", "", cleaned)
     match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
     if not match:
-        raise ValueError("AI 未回傳 JSON")
+        raise ValueError(f"AI 未回傳 JSON，原始內容：{cleaned[:300]}")
     return json.loads(match.group(0))
 
 
-def analyze_image_as_json(image_path, prompt):
+def parse_ai_text_fallback(text, result_type):
+    content = str(text or "").strip()
+    if result_type == "cups":
+        match = re.search(
+            r"(?:總杯數|杯數|共計|合計)\D{0,12}([1-9]\d{0,5})",
+            content
+        )
+        if match:
+            return {"cups": int(match.group(1)), "confidence": 0.5, "note": "文字備援擷取"}
+
+    if result_type == "expense":
+        match = re.search(
+            r"(?:總額|總計|應付|實付|金額|合計)\D{0,15}"
+            r"(?:NT\$|NTD|\$)?\s*([\d,]+(?:\.\d{1,2})?)",
+            content,
+            flags=re.IGNORECASE
+        )
+        if match:
+            return {
+                "description": "收據支出（待確認）",
+                "amount": match.group(1),
+                "note": "文字備援擷取",
+                "confidence": 0.5
+            }
+
+    raise ValueError(f"無法從 AI 文字回應擷取資料：{content[:300]}")
+
+
+def analyze_image_as_json(image_path, prompt, result_type):
     image_file = genai.upload_file(image_path)
     response = model.generate_content(
         [prompt, image_file],
@@ -2005,7 +2035,36 @@ def analyze_image_as_json(image_path, prompt):
             "response_mime_type": "application/json"
         }
     )
-    return parse_ai_json(response.text)
+    raw_text = response.text if response.text else ""
+    print("[AI] 圖片辨識原始回應:", raw_text)
+
+    try:
+        return parse_ai_json(raw_text)
+    except Exception as first_error:
+        print("[AI] 第一次 JSON 解析失敗:", first_error)
+
+    retry_prompt = (
+        prompt
+        + "\n你上一次沒有依格式回答。請重新查看同一張圖片，"
+        "這次只能輸出一個合法 JSON 物件，不要使用 Markdown、說明文字或程式碼區塊。"
+    )
+    retry_response = model.generate_content(
+        [retry_prompt, image_file],
+        generation_config={
+            "temperature": 0,
+            "max_output_tokens": 512
+        }
+    )
+    retry_text = retry_response.text if retry_response.text else ""
+    print("[AI] 圖片辨識重試回應:", retry_text)
+    try:
+        return parse_ai_json(retry_text)
+    except Exception as second_error:
+        print("[AI] 第二次 JSON 解析失敗:", second_error)
+        return parse_ai_text_fallback(
+            retry_text or raw_text,
+            result_type
+        )
 
 
 def handle_cup_photo_result(event, user_id, image_path, message_id):
@@ -2017,7 +2076,8 @@ def handle_cup_photo_result(event, user_id, image_path, message_id):
             """辨識這張收銀機畫面或手寫紀錄中的「總杯數」。
 只回傳 JSON：
 {"cups": 正整數或null, "confidence": 0到1, "note": "簡短說明"}
-不要把金額、訂單編號或日期當成杯數。無法確定時 cups 回傳 null。"""
+不要把金額、訂單編號或日期當成杯數。無法確定時 cups 回傳 null。""",
+            "cups"
         )
         print("[AI] 杯數照片辨識結果:", result)
         cups_text = str(result.get("cups", "")).strip().replace(",", "")
@@ -2057,7 +2117,8 @@ def handle_expense_photo_result(event, user_id, image_path, message_id):
  "note": "收據上的簡短備註", "confidence": 0到1}
 amount 必須是收據最終應付總額，不要使用統編、發票號碼、日期或找零。
 如果只看得出總額但看不出商店或品項，description 回傳「收據支出」。
-金額無法確定時 amount 回傳 null。"""
+金額無法確定時 amount 回傳 null。""",
+            "expense"
         )
         print("[AI] 收據照片辨識結果:", result)
         description = str(result.get("description", "")).strip()
