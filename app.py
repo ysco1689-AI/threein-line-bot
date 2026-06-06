@@ -3,10 +3,13 @@ import json
 import tempfile
 import re
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import google.generativeai as genai
 import gspread
 
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
 from google.oauth2.service_account import Credentials
 from flask import Flask, request, send_file
 
@@ -43,6 +46,9 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
 SHIFT_SPREADSHEET_ID = os.getenv("SHIFT_SPREADSHEET_ID", SPREADSHEET_ID)
+CUP_PHOTO_FOLDER_ID = os.getenv("CUP_PHOTO_FOLDER_ID")
+EXPENSE_PHOTO_FOLDER_ID = os.getenv("EXPENSE_PHOTO_FOLDER_ID")
+EVENT_PHOTO_FOLDER_ID = os.getenv("EVENT_PHOTO_FOLDER_ID")
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-2.5-flash")
@@ -52,13 +58,28 @@ handler = WebhookHandler(CHANNEL_SECRET)
 
 
 def get_google_client():
-    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
     service_account_info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
     credentials = Credentials.from_service_account_info(
         service_account_info,
         scopes=scopes
     )
     return gspread.authorize(credentials)
+
+
+def get_google_credentials():
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    service_account_info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+    return Credentials.from_service_account_info(
+        service_account_info,
+        scopes=scopes
+    )
 
 
 def load_all_data():
@@ -156,6 +177,62 @@ def get_spreadsheet():
 def get_shift_spreadsheet():
     gc = get_google_client()
     return gc.open_by_key(SHIFT_SPREADSHEET_ID)
+
+
+def safe_filename_part(value, fallback="unknown"):
+    text = str(value or "").strip()
+    text = re.sub(r'[\\/:*?"<>|]+', "_", text)
+    text = re.sub(r"\s+", "_", text)
+    return text[:50] or fallback
+
+
+def upload_photo_to_drive(
+    image_path,
+    folder_id,
+    category,
+    user_name,
+    message_id
+):
+    if not folder_id:
+        raise RuntimeError(f"{category} 的 Google Drive 資料夾 ID 尚未設定")
+
+    extension = Path(image_path).suffix.lower() or ".jpg"
+    filename = (
+        f"{datetime.now(timezone(timedelta(hours=8))).strftime('%Y%m%d_%H%M%S')}_"
+        f"{safe_filename_part(user_name)}_"
+        f"{safe_filename_part(category)}_"
+        f"{safe_filename_part(message_id)}{extension}"
+    )
+    credentials = get_google_credentials()
+    drive_service = build(
+        "drive",
+        "v3",
+        credentials=credentials,
+        cache_discovery=False
+    )
+    media = MediaFileUpload(
+        image_path,
+        mimetype="image/jpeg",
+        resumable=False
+    )
+    uploaded = drive_service.files().create(
+        body={
+            "name": filename,
+            "parents": [folder_id]
+        },
+        media_body=media,
+        fields="id,name,webViewLink",
+        supportsAllDrives=True
+    ).execute()
+    file_id = uploaded["id"]
+    return {
+        "id": file_id,
+        "name": uploaded.get("name", filename),
+        "url": uploaded.get(
+            "webViewLink",
+            f"https://drive.google.com/file/d/{file_id}/view"
+        )
+    }
 
 
 def normalize_date_text(value):
@@ -496,7 +573,8 @@ def write_new_cup_record(
     report_date,
     cups,
     input_method="手動",
-    photo_message_id=""
+    photo_message_id="",
+    photo_drive_url=""
 ):
     spreadsheet = get_shift_spreadsheet()
     sheet = spreadsheet.worksheet("杯數回報")
@@ -512,7 +590,8 @@ def write_new_cup_record(
         "",
         "",
         input_method,
-        photo_message_id
+        photo_message_id,
+        photo_drive_url
     ])
 
 
@@ -520,14 +599,15 @@ def update_cup_record(
     existing_record,
     cups,
     input_method="手動",
-    photo_message_id=""
+    photo_message_id="",
+    photo_drive_url=""
 ):
     spreadsheet = get_shift_spreadsheet()
     sheet = spreadsheet.worksheet("杯數回報")
     row_number = existing_record["_row_number"]
     original_cups = str(existing_record.get("杯數", "")).strip()
     sheet.update(
-        range_name=f"F{row_number}:L{row_number}",
+        range_name=f"F{row_number}:M{row_number}",
         values=[[
             cups,
             existing_record.get("填寫時間", "") or now_time_text(),
@@ -535,7 +615,8 @@ def update_cup_record(
             original_cups,
             now_time_text(),
             input_method,
-            photo_message_id
+            photo_message_id,
+            photo_drive_url
         ]]
     )
 
@@ -553,6 +634,7 @@ def submit_cup_value(event, user_id, state, cups):
     cup_report = state.setdefault("cup_report", {})
     report_date = cup_report.get("date")
     photo_message_id = cup_report.get("photo_message_id", "")
+    photo_drive_url = cup_report.get("photo_drive_url", "")
     input_method = "照片辨識" if photo_message_id else "手動"
     try:
         existing = find_cup_record(
@@ -573,7 +655,8 @@ def submit_cup_value(event, user_id, state, cups):
                 report_date,
                 cups,
                 input_method,
-                photo_message_id
+                photo_message_id,
+                photo_drive_url
             )
         except Exception as e:
             print("[ERROR] 寫入杯數紀錄失敗:", e)
@@ -695,7 +778,8 @@ def handle_cup_report_text(event, user_id, user_message):
                     existing,
                     cups,
                     "照片辨識" if cup_report.get("photo_message_id") else "手動",
-                    cup_report.get("photo_message_id", "")
+                    cup_report.get("photo_message_id", ""),
+                    cup_report.get("photo_drive_url", "")
                 )
             except Exception as e:
                 print("[ERROR] 修改杯數紀錄失敗:", e)
@@ -1376,7 +1460,8 @@ def write_expense_record(user_id, shift, expense_report):
         expense_report.get("payment_note", ""),
         "有" if has_receipt else "無",
         "" if has_receipt else expense_report.get("no_receipt_reason", ""),
-        expense_report.get("photo_message_id", ""),
+        expense_report.get("photo_drive_url")
+        or expense_report.get("photo_message_id", ""),
         "已確認非重複" if expense_report.get("duplicate_confirmed") else "未發現重複",
         review_status,
         now_time_text()
@@ -2070,6 +2155,21 @@ def analyze_image_as_json(image_path, prompt, result_type):
 def handle_cup_photo_result(event, user_id, image_path, message_id):
     state = user_states.get(user_id, {})
     cup_report = state.setdefault("cup_report", {})
+    cup_report["photo_message_id"] = message_id
+    shift = state.get("data", {})
+    try:
+        drive_file = upload_photo_to_drive(
+            image_path,
+            CUP_PHOTO_FOLDER_ID,
+            "杯數照片",
+            shift.get("name", user_id),
+            message_id
+        )
+        cup_report["photo_drive_url"] = drive_file["url"]
+        print("[DRIVE] 杯數照片已上傳:", drive_file)
+    except Exception as e:
+        print("[ERROR] 杯數照片上傳 Drive 失敗:", e)
+
     try:
         result = analyze_image_as_json(
             image_path,
@@ -2107,6 +2207,22 @@ def handle_cup_photo_result(event, user_id, image_path, message_id):
 def handle_expense_photo_result(event, user_id, image_path, message_id):
     state = user_states.get(user_id, {})
     expense_report = state.setdefault("expense_report", {})
+    expense_report["has_receipt"] = True
+    expense_report["photo_message_id"] = message_id
+    shift = state.get("data", {})
+    try:
+        drive_file = upload_photo_to_drive(
+            image_path,
+            EXPENSE_PHOTO_FOLDER_ID,
+            "費用收據",
+            shift.get("name", user_id),
+            message_id
+        )
+        expense_report["photo_drive_url"] = drive_file["url"]
+        print("[DRIVE] 費用收據已上傳:", drive_file)
+    except Exception as e:
+        print("[ERROR] 費用收據上傳 Drive 失敗:", e)
+
     try:
         result = analyze_image_as_json(
             image_path,
@@ -2148,13 +2264,12 @@ amount 必須是收據最終應付總額，不要使用統編、發票號碼、�
         )
     except Exception as e:
         print("[ERROR] 收據照片辨識失敗:", e)
-        expense_report["has_receipt"] = False
-        expense_report.pop("photo_message_id", None)
         state["step"] = "waiting_expense_description"
         user_states[user_id] = state
         reply_to_line(
             event,
-            "收據辨識失敗，已切換為手動填寫。\n請輸入支出說明。"
+            "收據辨識失敗，但照片已保留。\n"
+            "已切換為手動填寫，請輸入支出說明。"
         )
 
 
