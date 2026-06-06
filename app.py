@@ -640,13 +640,32 @@ def drive_quick_reply():
 def find_today_mileage_record(user_id):
     spreadsheet = get_shift_spreadsheet()
     sheet = spreadsheet.worksheet("里程回報")
-    rows = get_records_by_header(sheet, "LINE_ID")
-    for row in reversed(rows):
+    values = sheet.get_all_values()
+    header_index = None
+    headers = []
+    for index, row in enumerate(values):
+        row_headers = [str(cell).strip() for cell in row]
+        if "LINE_ID" in row_headers and "是否開車" in row_headers:
+            header_index = index
+            headers = row_headers
+            break
+
+    if header_index is None:
+        return None
+
+    for row_index in range(len(values) - 1, header_index, -1):
+        row = values[row_index]
+        record = {
+            header: row[col_index] if col_index < len(row) else ""
+            for col_index, header in enumerate(headers)
+            if header
+        }
         if (
-            str(row.get("LINE_ID", "")).strip() == user_id
-            and normalize_date_text(row.get("日期", "")) == today_text()
+            str(record.get("LINE_ID", "")).strip() == user_id
+            and normalize_date_text(record.get("日期", "")) == today_text()
         ):
-            return row
+            record["_row_number"] = row_index + 1
+            return record
     return None
 
 
@@ -654,6 +673,7 @@ def write_mileage_record(
     user_id,
     shift,
     drove,
+    plate_last_four="",
     start_mileage="",
     end_mileage="",
     distance=""
@@ -667,6 +687,7 @@ def write_mileage_record(
         shift.get("shift_name", ""),
         shift.get("booth", ""),
         "是" if drove else "否",
+        plate_last_four,
         start_mileage,
         end_mileage,
         distance,
@@ -693,9 +714,26 @@ def start_mileage_report_flow(event, user_id):
         if drove == "否":
             reply_to_line(event, "您今日已回報「沒有開車」，無需重複填寫。")
         else:
+            plate_last_four = str(existing.get("車牌尾四碼", "")).strip()
+            if not plate_last_four:
+                state = user_states.get(user_id, {})
+                state.update({
+                    "flow": "report_mileage",
+                    "step": "waiting_existing_plate_last_four",
+                    "data": shift,
+                    "mileage_report": {"existing_record": existing}
+                })
+                user_states[user_id] = state
+                reply_to_line(
+                    event,
+                    "您今日里程已回報，但尚未填寫車牌。\n"
+                    "請補輸入車牌尾四碼，例如：1234 或 AB12"
+                )
+                return
             reply_to_line(
                 event,
-                f"您今日已完成里程回報：{distance or '0'} 公里，無需重複填寫。"
+                f"您今日已完成里程回報：車牌尾四碼 {plate_last_four or '未填'}，"
+                f"本次 {distance or '0'} 公里，無需重複填寫。"
             )
         return
 
@@ -732,6 +770,22 @@ def parse_mileage_number(value):
     return number
 
 
+def normalize_plate_last_four(value):
+    text = re.sub(r"[\s-]+", "", str(value)).upper()
+    if not re.fullmatch(r"[A-Z0-9]{4}", text):
+        return None
+    return text
+
+
+def update_mileage_plate(existing_record, plate_last_four):
+    spreadsheet = get_shift_spreadsheet()
+    sheet = spreadsheet.worksheet("里程回報")
+    sheet.update_acell(
+        f"G{existing_record['_row_number']}",
+        plate_last_four
+    )
+
+
 def format_mileage_number(value):
     if float(value).is_integer():
         return str(int(value))
@@ -744,6 +798,29 @@ def handle_mileage_report_text(event, user_id, user_message):
     shift = state.get("data", {})
     mileage_report = state.setdefault("mileage_report", {})
     message = user_message.strip()
+
+    if step == "waiting_existing_plate_last_four":
+        plate_last_four = normalize_plate_last_four(message)
+        if plate_last_four is None:
+            reply_to_line(
+                event,
+                "車牌尾四碼必須是 4 個英文字母或數字，例如：1234 或 AB12。"
+            )
+            return True
+
+        try:
+            update_mileage_plate(
+                mileage_report.get("existing_record", {}),
+                plate_last_four
+            )
+        except Exception as e:
+            print("[ERROR] 補填車牌尾四碼失敗:", e)
+            reply_to_line(event, "補填車牌時發生問題，請稍後再試。")
+            return True
+
+        finish_mileage_flow(user_id)
+        reply_to_line(event, f"🚗 車牌尾四碼已補填完成：{plate_last_four}")
+        return True
 
     if step == "waiting_drive_status":
         if message in ["🚶 沒有開車", "沒有開車", "沒開車"]:
@@ -759,9 +836,13 @@ def handle_mileage_report_text(event, user_id, user_message):
             return True
 
         if message in ["🚗 有開車", "有開車", "開車"]:
-            state["step"] = "waiting_start_mileage"
+            state["step"] = "waiting_plate_last_four"
             user_states[user_id] = state
-            reply_to_line(event, "請輸入出發里程（儀表板公里數）。")
+            reply_to_line(
+                event,
+                "請輸入本次使用車輛的車牌尾四碼。\n"
+                "例如：1234 或 AB12"
+            )
             return True
 
         reply_to_line(
@@ -769,6 +850,21 @@ def handle_mileage_report_text(event, user_id, user_message):
             "請選擇「🚗 有開車」或「🚶 沒有開車」。",
             quick_reply=drive_quick_reply()
         )
+        return True
+
+    if step == "waiting_plate_last_four":
+        plate_last_four = normalize_plate_last_four(message)
+        if plate_last_four is None:
+            reply_to_line(
+                event,
+                "車牌尾四碼必須是 4 個英文字母或數字，例如：1234 或 AB12。"
+            )
+            return True
+
+        mileage_report["plate_last_four"] = plate_last_four
+        state["step"] = "waiting_start_mileage"
+        user_states[user_id] = state
+        reply_to_line(event, "請輸入出發里程（儀表板公里數）。")
         return True
 
     if step == "waiting_start_mileage":
@@ -807,9 +903,10 @@ def handle_mileage_report_text(event, user_id, user_message):
                 user_id,
                 shift,
                 True,
-                start_text,
-                end_text,
-                distance_text
+                plate_last_four=mileage_report.get("plate_last_four", ""),
+                start_mileage=start_text,
+                end_mileage=end_text,
+                distance=distance_text
             )
         except Exception as e:
             print("[ERROR] 寫入里程紀錄失敗:", e)
@@ -817,7 +914,12 @@ def handle_mileage_report_text(event, user_id, user_message):
             return True
 
         finish_mileage_flow(user_id)
-        reply_to_line(event, f"🚗 里程回報完成！本次行駛：{distance_text} 公里")
+        reply_to_line(
+            event,
+            "🚗 里程回報完成！\n"
+            f"車牌尾四碼：{mileage_report.get('plate_last_four', '')}\n"
+            f"本次行駛：{distance_text} 公里"
+        )
         return True
 
     return False
