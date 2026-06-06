@@ -10,7 +10,8 @@ import gspread
 
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from google.oauth2.service_account import Credentials
+from google.oauth2.credentials import Credentials as UserCredentials
+from google.oauth2.service_account import Credentials as ServiceAccountCredentials
 from flask import Flask, request, send_file
 
 from linebot.v3 import WebhookHandler
@@ -44,6 +45,9 @@ CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
 CHANNEL_SECRET = os.getenv("CHANNEL_SECRET")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+GOOGLE_DRIVE_CLIENT_ID = os.getenv("GOOGLE_DRIVE_CLIENT_ID")
+GOOGLE_DRIVE_CLIENT_SECRET = os.getenv("GOOGLE_DRIVE_CLIENT_SECRET")
+GOOGLE_DRIVE_REFRESH_TOKEN = os.getenv("GOOGLE_DRIVE_REFRESH_TOKEN")
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
 SHIFT_SPREADSHEET_ID = os.getenv("SHIFT_SPREADSHEET_ID", SPREADSHEET_ID)
 CUP_PHOTO_FOLDER_ID = os.getenv("CUP_PHOTO_FOLDER_ID")
@@ -63,22 +67,34 @@ def get_google_client():
         "https://www.googleapis.com/auth/drive"
     ]
     service_account_info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
-    credentials = Credentials.from_service_account_info(
+    credentials = ServiceAccountCredentials.from_service_account_info(
         service_account_info,
         scopes=scopes
     )
     return gspread.authorize(credentials)
 
 
-def get_google_credentials():
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
+def get_drive_credentials():
+    missing = [
+        name for name, value in [
+            ("GOOGLE_DRIVE_CLIENT_ID", GOOGLE_DRIVE_CLIENT_ID),
+            ("GOOGLE_DRIVE_CLIENT_SECRET", GOOGLE_DRIVE_CLIENT_SECRET),
+            ("GOOGLE_DRIVE_REFRESH_TOKEN", GOOGLE_DRIVE_REFRESH_TOKEN)
+        ]
+        if not value
     ]
-    service_account_info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
-    return Credentials.from_service_account_info(
-        service_account_info,
-        scopes=scopes
+    if missing:
+        raise RuntimeError(
+            "Google Drive OAuth 尚未設定：" + ", ".join(missing)
+        )
+
+    return UserCredentials(
+        token=None,
+        refresh_token=GOOGLE_DRIVE_REFRESH_TOKEN,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=GOOGLE_DRIVE_CLIENT_ID,
+        client_secret=GOOGLE_DRIVE_CLIENT_SECRET,
+        scopes=["https://www.googleapis.com/auth/drive"]
     )
 
 
@@ -203,7 +219,7 @@ def upload_photo_to_drive(
         f"{safe_filename_part(category)}_"
         f"{safe_filename_part(message_id)}{extension}"
     )
-    credentials = get_google_credentials()
+    credentials = get_drive_credentials()
     drive_service = build(
         "drive",
         "v3",
