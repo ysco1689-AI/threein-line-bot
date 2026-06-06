@@ -6,7 +6,7 @@ import google.generativeai as genai
 import gspread
 
 from google.oauth2.service_account import Credentials
-from flask import Flask, request
+from flask import Flask, request, send_file
 
 from linebot.v3 import WebhookHandler
 from linebot.v3.messaging import (
@@ -570,6 +570,7 @@ def callback():
 def setup_richmenu_route():
     admin_key = os.getenv("ADMIN_SETUP_KEY")
     request_key = request.args.get("key", "")
+    user_id = request.args.get("user_id", "").strip()
 
     if not admin_key:
         return "ADMIN_SETUP_KEY is not configured", 403
@@ -581,6 +582,7 @@ def setup_richmenu_route():
         from setup_richmenu import (
             create_rich_menu,
             create_richmenu_image,
+            link_rich_menu_to_user,
             require_token,
             set_default_rich_menu,
             upload_rich_menu_image,
@@ -591,11 +593,33 @@ def setup_richmenu_route():
         rich_menu_id = create_rich_menu()
         upload_rich_menu_image(rich_menu_id, image_path)
         set_default_rich_menu(rich_menu_id)
-        return f"Rich Menu 建立完成：{rich_menu_id}", 200
+
+        if user_id:
+            link_rich_menu_to_user(rich_menu_id, user_id)
+
+        result = f"Rich Menu 建立完成：{rich_menu_id}"
+        if user_id:
+            result += f"\n已直接套用至：{user_id}"
+        return result, 200
 
     except Exception as e:
         print("[ERROR] setup-richmenu 失敗:", e)
         return f"Rich Menu 建立失敗：{e}", 500
+
+
+@app.route("/richmenu-preview", methods=["GET"])
+def richmenu_preview_route():
+    admin_key = os.getenv("ADMIN_SETUP_KEY")
+    request_key = request.args.get("key", "")
+
+    if not admin_key or request_key != admin_key:
+        return "Forbidden", 403
+
+    image_path = os.path.join(os.path.dirname(__file__), "richmenu.png")
+    if not os.path.exists(image_path):
+        return "richmenu.png not found on Render", 404
+
+    return send_file(image_path, mimetype="image/png")
 
 
 @handler.add(MessageEvent, message=ImageMessageContent)
