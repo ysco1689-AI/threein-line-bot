@@ -626,6 +626,203 @@ def handle_cup_report_text(event, user_id, user_message):
     return False
 
 
+def drive_quick_reply():
+    return QuickReply(items=[
+        QuickReplyItem(
+            action=MessageAction(label="🚗 有開車", text="🚗 有開車")
+        ),
+        QuickReplyItem(
+            action=MessageAction(label="🚶 沒有開車", text="🚶 沒有開車")
+        )
+    ])
+
+
+def find_today_mileage_record(user_id):
+    spreadsheet = get_shift_spreadsheet()
+    sheet = spreadsheet.worksheet("里程回報")
+    rows = get_records_by_header(sheet, "LINE_ID")
+    for row in reversed(rows):
+        if (
+            str(row.get("LINE_ID", "")).strip() == user_id
+            and normalize_date_text(row.get("日期", "")) == today_text()
+        ):
+            return row
+    return None
+
+
+def write_mileage_record(
+    user_id,
+    shift,
+    drove,
+    start_mileage="",
+    end_mileage="",
+    distance=""
+):
+    spreadsheet = get_shift_spreadsheet()
+    sheet = spreadsheet.worksheet("里程回報")
+    sheet.append_row([
+        today_text(),
+        user_id,
+        shift.get("name", ""),
+        shift.get("shift_name", ""),
+        shift.get("booth", ""),
+        "是" if drove else "否",
+        start_mileage,
+        end_mileage,
+        distance,
+        now_time_text()
+    ])
+
+
+def start_mileage_report_flow(event, user_id):
+    shift = get_confirmed_shift(user_id)
+    if not shift:
+        reply_to_line(event, "找不到目前可回報的檔期，請聯絡主管確認排班。")
+        return
+
+    try:
+        existing = find_today_mileage_record(user_id)
+    except Exception as e:
+        print("[ERROR] 查詢里程紀錄失敗:", e)
+        reply_to_line(event, "查詢里程資料時發生問題，請稍後再試。")
+        return
+
+    if existing:
+        drove = str(existing.get("是否開車", "")).strip()
+        distance = str(existing.get("本次里程數", "")).strip()
+        if drove == "否":
+            reply_to_line(event, "您今日已回報「沒有開車」，無需重複填寫。")
+        else:
+            reply_to_line(
+                event,
+                f"您今日已完成里程回報：{distance or '0'} 公里，無需重複填寫。"
+            )
+        return
+
+    state = user_states.get(user_id, {})
+    state.update({
+        "flow": "report_mileage",
+        "step": "waiting_drive_status",
+        "data": shift,
+        "mileage_report": {}
+    })
+    user_states[user_id] = state
+    reply_to_line(
+        event,
+        "今日是否有開車前往？",
+        quick_reply=drive_quick_reply()
+    )
+
+
+def finish_mileage_flow(user_id):
+    state = user_states.get(user_id, {})
+    state.pop("flow", None)
+    state.pop("step", None)
+    state.pop("mileage_report", None)
+    user_states[user_id] = state
+
+
+def parse_mileage_number(value):
+    text = str(value).strip().replace(",", "")
+    if not re.fullmatch(r"\d+(?:\.\d{1,2})?", text):
+        return None
+    number = float(text)
+    if number < 0:
+        return None
+    return number
+
+
+def format_mileage_number(value):
+    if float(value).is_integer():
+        return str(int(value))
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+def handle_mileage_report_text(event, user_id, user_message):
+    state = user_states.get(user_id, {})
+    step = state.get("step")
+    shift = state.get("data", {})
+    mileage_report = state.setdefault("mileage_report", {})
+    message = user_message.strip()
+
+    if step == "waiting_drive_status":
+        if message in ["🚶 沒有開車", "沒有開車", "沒開車"]:
+            try:
+                write_mileage_record(user_id, shift, False)
+            except Exception as e:
+                print("[ERROR] 寫入無里程紀錄失敗:", e)
+                reply_to_line(event, "寫入里程資料時發生問題，請稍後再試。")
+                return True
+
+            finish_mileage_flow(user_id)
+            reply_to_line(event, "🚶 已記錄今日沒有開車，里程回報完成。")
+            return True
+
+        if message in ["🚗 有開車", "有開車", "開車"]:
+            state["step"] = "waiting_start_mileage"
+            user_states[user_id] = state
+            reply_to_line(event, "請輸入出發里程（儀表板公里數）。")
+            return True
+
+        reply_to_line(
+            event,
+            "請選擇「🚗 有開車」或「🚶 沒有開車」。",
+            quick_reply=drive_quick_reply()
+        )
+        return True
+
+    if step == "waiting_start_mileage":
+        start_mileage = parse_mileage_number(message)
+        if start_mileage is None:
+            reply_to_line(event, "出發里程必須是 0 以上的數字，請重新輸入。")
+            return True
+
+        mileage_report["start_mileage"] = start_mileage
+        state["step"] = "waiting_end_mileage"
+        user_states[user_id] = state
+        reply_to_line(event, "請輸入收攤里程（儀表板公里數）。")
+        return True
+
+    if step == "waiting_end_mileage":
+        end_mileage = parse_mileage_number(message)
+        if end_mileage is None:
+            reply_to_line(event, "收攤里程必須是 0 以上的數字，請重新輸入。")
+            return True
+
+        start_mileage = mileage_report.get("start_mileage")
+        if end_mileage <= start_mileage:
+            reply_to_line(
+                event,
+                f"收攤里程必須大於出發里程（{format_mileage_number(start_mileage)}），請重新輸入。"
+            )
+            return True
+
+        distance = round(end_mileage - start_mileage, 2)
+        start_text = format_mileage_number(start_mileage)
+        end_text = format_mileage_number(end_mileage)
+        distance_text = format_mileage_number(distance)
+
+        try:
+            write_mileage_record(
+                user_id,
+                shift,
+                True,
+                start_text,
+                end_text,
+                distance_text
+            )
+        except Exception as e:
+            print("[ERROR] 寫入里程紀錄失敗:", e)
+            reply_to_line(event, "寫入里程資料時發生問題，請稍後再試。")
+            return True
+
+        finish_mileage_flow(user_id)
+        reply_to_line(event, f"🚗 里程回報完成！本次行駛：{distance_text} 公里")
+        return True
+
+    return False
+
+
 def handle_confirm_shift_text(event, user_id, user_message):
     state = user_states.get(user_id, {})
     shift = state.get("data", {})
@@ -662,6 +859,9 @@ def handle_active_flow(event, user_id, user_message):
 
     if state.get("flow") == "report_cups":
         return handle_cup_report_text(event, user_id, user_message)
+
+    if state.get("flow") == "report_mileage":
+        return handle_mileage_report_text(event, user_id, user_message)
 
     return False
 
@@ -948,6 +1148,10 @@ def handle_image_message(event):
         )
         return
 
+    if state.get("flow") == "report_mileage":
+        reply_to_line(event, "里程回報請直接輸入儀表板公里數，不需要上傳照片。")
+        return
+
     message_id = event.message.id
     image_path = None
 
@@ -1039,10 +1243,15 @@ def handle_postback(event):
         start_cup_report_flow(event, user_id)
         return
 
+    if data == "action=report_mileage":
+        if not require_shift_confirmed(event, user_id):
+            return
+        start_mileage_report_flow(event, user_id)
+        return
+
     locked_actions = {
         "action=report_materials": "📦 餘料回報",
-        "action=report_expense": "💰 費用支出",
-        "action=report_mileage": "🚗 里程回報"
+        "action=report_expense": "💰 費用支出"
     }
 
     if data in locked_actions:
