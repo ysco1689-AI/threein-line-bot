@@ -2019,9 +2019,11 @@ def handle_cup_photo_result(event, user_id, image_path, message_id):
 {"cups": 正整數或null, "confidence": 0到1, "note": "簡短說明"}
 不要把金額、訂單編號或日期當成杯數。無法確定時 cups 回傳 null。"""
         )
-        cups = result.get("cups")
-        if not isinstance(cups, int) or cups <= 0:
+        print("[AI] 杯數照片辨識結果:", result)
+        cups_text = str(result.get("cups", "")).strip().replace(",", "")
+        if not re.fullmatch(r"[1-9]\d*", cups_text):
             raise ValueError("找不到可靠的正整數杯數")
+        cups = int(cups_text)
 
         cup_report["ai_cups"] = cups
         cup_report["photo_message_id"] = message_id
@@ -2048,20 +2050,26 @@ def handle_expense_photo_result(event, user_id, image_path, message_id):
     try:
         result = analyze_image_as_json(
             image_path,
-            """辨識這張收據或付款憑證。
+            """辨識這張台灣收據、發票、電子發票證明聯或手寫付款憑證。
+圖片可能橫放或旋轉，請先自行判斷正確閱讀方向。
 只回傳 JSON：
 {"description": "支出品項或商店名稱", "amount": 數字或null,
  "note": "收據上的簡短備註", "confidence": 0到1}
-amount 必須是收據最終應付總額，不要使用統編、日期或找零。無法確定時回傳 null。"""
+amount 必須是收據最終應付總額，不要使用統編、發票號碼、日期或找零。
+如果只看得出總額但看不出商店或品項，description 回傳「收據支出」。
+金額無法確定時 amount 回傳 null。"""
         )
+        print("[AI] 收據照片辨識結果:", result)
         description = str(result.get("description", "")).strip()
-        amount = result.get("amount")
-        if not description or not isinstance(amount, (int, float)) or amount <= 0:
-            raise ValueError("找不到可靠的支出說明或總額")
+        if not description or description.lower() == "null":
+            description = "收據支出（待確認）"
+        amount = parse_expense_amount(result.get("amount", ""))
+        if amount is None:
+            raise ValueError(f"找不到可靠的支出總額，AI結果：{result}")
 
         expense_report.update({
             "description": description[:100],
-            "amount": float(amount),
+            "amount": amount,
             "has_receipt": True,
             "photo_message_id": message_id,
             "receipt_note": str(result.get("note", "")).strip()[:100],
