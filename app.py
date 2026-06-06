@@ -2,6 +2,8 @@ import os
 import json
 import tempfile
 import re
+from datetime import date, datetime, timedelta, timezone
+
 import google.generativeai as genai
 import gspread
 
@@ -163,7 +165,6 @@ def normalize_date_text(value):
 
     for fmt in ("%Y/%m/%d", "%Y-%m-%d", "%Y.%m.%d"):
         try:
-            from datetime import datetime
             return datetime.strptime(text, fmt).strftime("%Y/%m/%d")
         except ValueError:
             continue
@@ -171,14 +172,22 @@ def normalize_date_text(value):
     return text
 
 
+def parse_date(value):
+    normalized = normalize_date_text(value)
+    if not normalized:
+        return None
+    try:
+        return datetime.strptime(normalized, "%Y/%m/%d").date()
+    except ValueError:
+        return None
+
+
 def today_text():
-    from datetime import datetime, timezone, timedelta
     taipei_tz = timezone(timedelta(hours=8))
     return datetime.now(taipei_tz).strftime("%Y/%m/%d")
 
 
 def now_time_text():
-    from datetime import datetime, timezone, timedelta
     taipei_tz = timezone(timedelta(hours=8))
     return datetime.now(taipei_tz).strftime("%H:%M")
 
@@ -208,8 +217,8 @@ def get_records_by_header(sheet, required_header):
     return []
 
 
-def find_today_shift(user_id):
-    today = today_text()
+def find_accessible_shift(user_id):
+    today = parse_date(today_text())
     spreadsheet = get_shift_spreadsheet()
     sheet = spreadsheet.worksheet("排班表")
     rows = get_records_by_header(sheet, "LINE_ID")
@@ -217,8 +226,8 @@ def find_today_shift(user_id):
     for row in rows:
         line_id = str(row.get("LINE_ID", "")).strip()
         status = str(row.get("狀態", "啟用")).strip()
-        start_date = normalize_date_text(row.get("開始日期", ""))
-        end_date = normalize_date_text(row.get("結束日期", ""))
+        start_date = parse_date(row.get("開始日期", ""))
+        end_date = parse_date(row.get("結束日期", ""))
 
         if line_id != user_id:
             continue
@@ -226,17 +235,24 @@ def find_today_shift(user_id):
         if status and status not in ["啟用", "active", "Active", "ACTIVE"]:
             continue
 
-        if start_date <= today <= end_date:
+        if not start_date or not end_date:
+            continue
+
+        if start_date <= today <= end_date + timedelta(days=1):
             return {
                 "line_id": line_id,
                 "name": str(row.get("姓名", "")).strip(),
                 "shift_name": str(row.get("檔期名稱", "")).strip(),
                 "booth": str(row.get("攤位編號", "")).strip(),
-                "start_date": start_date,
-                "end_date": end_date
+                "start_date": start_date.strftime("%Y/%m/%d"),
+                "end_date": end_date.strftime("%Y/%m/%d")
             }
 
     return None
+
+
+def find_today_shift(user_id):
+    return find_accessible_shift(user_id)
 
 
 def write_shift_confirmation(user_id, shift):
@@ -300,10 +316,30 @@ def mark_shift_confirmed(user_id, shift):
 
 def check_shift_confirmed(user_id):
     state = user_states.get(user_id, {})
-    return (
+    if (
         state.get("shift_confirmed") is True
         and state.get("confirmed_date") == today_text()
-    )
+    ):
+        return True
+
+    try:
+        spreadsheet = get_shift_spreadsheet()
+        sheet = spreadsheet.worksheet("確認紀錄")
+        rows = get_records_by_header(sheet, "LINE_ID")
+        for row in reversed(rows):
+            if (
+                str(row.get("LINE_ID", "")).strip() == user_id
+                and normalize_date_text(row.get("日期", "")) == today_text()
+                and str(row.get("確認狀態", "已確認")).strip() == "已確認"
+            ):
+                shift = find_accessible_shift(user_id)
+                if shift:
+                    mark_shift_confirmed(user_id, shift)
+                    return True
+    except Exception as e:
+        print("[ERROR] 讀取今日確認狀態失敗:", e)
+
+    return False
 
 
 def require_shift_confirmed(event, user_id):
@@ -311,6 +347,282 @@ def require_shift_confirmed(event, user_id):
         return True
 
     reply_to_line(event, "請先點選「✅ 確認檔期」完成今日確認後，才能使用此功能。")
+    return False
+
+
+def get_confirmed_shift(user_id):
+    state = user_states.get(user_id, {})
+    shift = state.get("data")
+    if shift:
+        return shift
+
+    shift = find_accessible_shift(user_id)
+    if shift:
+        state["data"] = shift
+        user_states[user_id] = state
+    return shift
+
+
+def date_quick_reply(dates):
+    return QuickReply(items=[
+        QuickReplyItem(
+            action=MessageAction(
+                label=value.strftime("%m/%d"),
+                text=f"杯數日期 {value.strftime('%Y/%m/%d')}"
+            )
+        )
+        for value in dates[:13]
+    ])
+
+
+def cup_update_quick_reply():
+    return QuickReply(items=[
+        QuickReplyItem(
+            action=MessageAction(label="✅ 確認修改", text="✅ 確認修改")
+        ),
+        QuickReplyItem(
+            action=MessageAction(label="❌ 取消", text="❌ 取消修改")
+        )
+    ])
+
+
+def available_cup_dates(shift):
+    start_date = parse_date(shift.get("start_date"))
+    end_date = parse_date(shift.get("end_date"))
+    today = parse_date(today_text())
+    if not start_date or not end_date or not today:
+        return []
+
+    last_available_date = min(end_date, today)
+    if last_available_date < start_date:
+        return []
+
+    dates = []
+    current = start_date
+    while current <= last_available_date:
+        dates.append(current)
+        current += timedelta(days=1)
+    return dates
+
+
+def start_cup_report_flow(event, user_id):
+    shift = get_confirmed_shift(user_id)
+    if not shift:
+        reply_to_line(event, "找不到目前可回報的檔期，請聯絡主管確認排班。")
+        return
+
+    dates = available_cup_dates(shift)
+    if not dates:
+        reply_to_line(event, "目前沒有可填寫的檔期日期。")
+        return
+
+    state = user_states.get(user_id, {})
+    state.update({
+        "flow": "report_cups",
+        "step": "waiting_cup_date",
+        "data": shift,
+        "cup_report": {}
+    })
+    user_states[user_id] = state
+
+    date_text = " / ".join(value.strftime("%m/%d") for value in dates)
+    reply_to_line(
+        event,
+        f"🥤 請選擇要填寫的日期：\n{date_text}",
+        quick_reply=date_quick_reply(dates)
+    )
+
+
+def find_cup_record(user_id, shift_name, report_date):
+    spreadsheet = get_shift_spreadsheet()
+    sheet = spreadsheet.worksheet("杯數回報")
+    values = sheet.get_all_values()
+
+    header_index = None
+    headers = []
+    for index, row in enumerate(values):
+        row_headers = [str(cell).strip() for cell in row]
+        if "LINE_ID" in row_headers and "杯數" in row_headers:
+            header_index = index
+            headers = row_headers
+            break
+
+    if header_index is None:
+        return None
+
+    for row_index in range(header_index + 1, len(values)):
+        row = values[row_index]
+        record = {
+            header: row[col_index] if col_index < len(row) else ""
+            for col_index, header in enumerate(headers)
+            if header
+        }
+        if (
+            normalize_date_text(record.get("日期", "")) == report_date
+            and str(record.get("LINE_ID", "")).strip() == user_id
+            and str(record.get("檔期名稱", "")).strip() == shift_name
+        ):
+            record["_row_number"] = row_index + 1
+            return record
+
+    return None
+
+
+def write_new_cup_record(user_id, shift, report_date, cups):
+    spreadsheet = get_shift_spreadsheet()
+    sheet = spreadsheet.worksheet("杯數回報")
+    sheet.append_row([
+        report_date,
+        user_id,
+        shift.get("name", ""),
+        shift.get("shift_name", ""),
+        shift.get("booth", ""),
+        cups,
+        now_time_text(),
+        "否",
+        "",
+        ""
+    ])
+
+
+def update_cup_record(existing_record, cups):
+    spreadsheet = get_shift_spreadsheet()
+    sheet = spreadsheet.worksheet("杯數回報")
+    row_number = existing_record["_row_number"]
+    original_cups = str(existing_record.get("杯數", "")).strip()
+    sheet.update(
+        range_name=f"F{row_number}:J{row_number}",
+        values=[[
+            cups,
+            existing_record.get("填寫時間", "") or now_time_text(),
+            "是",
+            original_cups,
+            now_time_text()
+        ]]
+    )
+
+
+def finish_cup_flow(user_id):
+    state = user_states.get(user_id, {})
+    state.pop("flow", None)
+    state.pop("step", None)
+    state.pop("cup_report", None)
+    user_states[user_id] = state
+
+
+def handle_cup_report_text(event, user_id, user_message):
+    state = user_states.get(user_id, {})
+    step = state.get("step")
+    shift = state.get("data", {})
+    cup_report = state.setdefault("cup_report", {})
+    message = user_message.strip()
+
+    if step == "waiting_cup_date":
+        match = re.fullmatch(r"杯數日期\s+(\d{4}/\d{2}/\d{2})", message)
+        selected_date = match.group(1) if match else normalize_date_text(message)
+        allowed_dates = {
+            value.strftime("%Y/%m/%d")
+            for value in available_cup_dates(shift)
+        }
+
+        if selected_date not in allowed_dates:
+            reply_to_line(
+                event,
+                "請使用下方按鈕選擇檔期日期。",
+                quick_reply=date_quick_reply(available_cup_dates(shift))
+            )
+            return True
+
+        cup_report["date"] = selected_date
+        state["step"] = "waiting_cup_count"
+        user_states[user_id] = state
+        reply_to_line(
+            event,
+            f"請輸入 {selected_date} 的杯數（正整數）。\n"
+            "照片辨識會在第五階段開放，目前請直接輸入數字。"
+        )
+        return True
+
+    if step == "waiting_cup_count":
+        if not re.fullmatch(r"[1-9]\d*", message):
+            reply_to_line(event, "杯數必須是大於 0 的整數，請重新輸入。")
+            return True
+
+        cups = int(message)
+        report_date = cup_report.get("date")
+        try:
+            existing = find_cup_record(
+                user_id,
+                shift.get("shift_name", ""),
+                report_date
+            )
+        except Exception as e:
+            print("[ERROR] 查詢杯數紀錄失敗:", e)
+            reply_to_line(event, "查詢既有杯數資料時發生問題，請稍後再試。")
+            return True
+
+        if not existing:
+            try:
+                write_new_cup_record(user_id, shift, report_date, cups)
+            except Exception as e:
+                print("[ERROR] 寫入杯數紀錄失敗:", e)
+                reply_to_line(event, "寫入杯數資料時發生問題，請稍後再試。")
+                return True
+
+            finish_cup_flow(user_id)
+            reply_to_line(event, f"🥤 {report_date} 杯數回報完成：{cups} 杯")
+            return True
+
+        existing_cups = int(str(existing.get("杯數", "0")).strip() or 0)
+        if existing_cups == cups:
+            finish_cup_flow(user_id)
+            reply_to_line(
+                event,
+                f"此日杯數已填寫（{existing_cups} 杯），資料相同無需重複填寫。"
+            )
+            return True
+
+        cup_report["proposed_cups"] = cups
+        cup_report["existing_record"] = existing
+        state["step"] = "waiting_cup_update_confirm"
+        user_states[user_id] = state
+        reply_to_line(
+            event,
+            f"⚠️ 您 {report_date} 已填寫過杯數：{existing_cups} 杯\n"
+            f"您現在輸入：{cups} 杯\n"
+            "數字不同，確認要修改嗎？",
+            quick_reply=cup_update_quick_reply()
+        )
+        return True
+
+    if step == "waiting_cup_update_confirm":
+        if message in ["✅ 確認修改", "確認修改"]:
+            existing = cup_report.get("existing_record")
+            cups = cup_report.get("proposed_cups")
+            report_date = cup_report.get("date")
+            try:
+                update_cup_record(existing, cups)
+            except Exception as e:
+                print("[ERROR] 修改杯數紀錄失敗:", e)
+                reply_to_line(event, "修改杯數資料時發生問題，請稍後再試。")
+                return True
+
+            finish_cup_flow(user_id)
+            reply_to_line(event, f"🥤 {report_date} 杯數已修改為：{cups} 杯")
+            return True
+
+        if message in ["❌ 取消修改", "取消修改", "取消"]:
+            finish_cup_flow(user_id)
+            reply_to_line(event, "已取消修改，原杯數資料保持不變。")
+            return True
+
+        reply_to_line(
+            event,
+            "請選擇「✅ 確認修改」或「❌ 取消」。",
+            quick_reply=cup_update_quick_reply()
+        )
+        return True
+
     return False
 
 
@@ -342,11 +654,14 @@ def handle_confirm_shift_text(event, user_id, user_message):
 
 def handle_active_flow(event, user_id, user_message):
     state = user_states.get(user_id)
-    if not state or state.get("shift_confirmed"):
+    if not state or not state.get("flow"):
         return False
 
     if state.get("flow") == "confirm_shift" and state.get("step") == "waiting_confirm":
         return handle_confirm_shift_text(event, user_id, user_message)
+
+    if state.get("flow") == "report_cups":
+        return handle_cup_report_text(event, user_id, user_message)
 
     return False
 
@@ -624,6 +939,15 @@ def richmenu_preview_route():
 
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image_message(event):
+    user_id = event.source.user_id
+    state = user_states.get(user_id, {})
+    if state.get("flow") == "report_cups":
+        reply_to_line(
+            event,
+            "杯數照片辨識會在第五階段開放，目前請直接輸入杯數數字。"
+        )
+        return
+
     message_id = event.message.id
     image_path = None
 
@@ -709,8 +1033,13 @@ def handle_postback(event):
         reply_to_line(event, "📋 事件紀錄功能會在後續階段開放，目前第一階段先完成確認檔期。")
         return
 
+    if data == "action=report_cups":
+        if not require_shift_confirmed(event, user_id):
+            return
+        start_cup_report_flow(event, user_id)
+        return
+
     locked_actions = {
-        "action=report_cups": "🥤 杯數回報",
         "action=report_materials": "📦 餘料回報",
         "action=report_expense": "💰 費用支出",
         "action=report_mileage": "🚗 里程回報"
