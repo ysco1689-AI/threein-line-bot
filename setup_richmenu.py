@@ -135,6 +135,18 @@ def set_default_rich_menu(rich_menu_id):
     response.raise_for_status()
 
 
+def link_rich_menu_to_user(rich_menu_id, user_id):
+    import requests
+
+    headers = {"Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}"}
+    response = requests.post(
+        f"https://api.line.me/v2/bot/user/{user_id}/richmenu/{rich_menu_id}",
+        headers=headers,
+        timeout=30,
+    )
+    response.raise_for_status()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
