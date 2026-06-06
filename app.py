@@ -386,6 +386,28 @@ def cup_update_quick_reply():
     ])
 
 
+def input_method_quick_reply():
+    return QuickReply(items=[
+        QuickReplyItem(
+            action=MessageAction(label="📷 拍照辨識", text="📷 拍照辨識")
+        ),
+        QuickReplyItem(
+            action=MessageAction(label="✏️ 手動輸入", text="✏️ 手動輸入")
+        )
+    ])
+
+
+def ai_result_quick_reply():
+    return QuickReply(items=[
+        QuickReplyItem(
+            action=MessageAction(label="✅ 正確", text="✅ AI辨識正確")
+        ),
+        QuickReplyItem(
+            action=MessageAction(label="✏️ 修改", text="✏️ 修改AI結果")
+        )
+    ])
+
+
 def available_cup_dates(shift):
     start_date = parse_date(shift.get("start_date"))
     end_date = parse_date(shift.get("end_date"))
@@ -468,7 +490,14 @@ def find_cup_record(user_id, shift_name, report_date):
     return None
 
 
-def write_new_cup_record(user_id, shift, report_date, cups):
+def write_new_cup_record(
+    user_id,
+    shift,
+    report_date,
+    cups,
+    input_method="手動",
+    photo_message_id=""
+):
     spreadsheet = get_shift_spreadsheet()
     sheet = spreadsheet.worksheet("杯數回報")
     sheet.append_row([
@@ -481,23 +510,32 @@ def write_new_cup_record(user_id, shift, report_date, cups):
         now_time_text(),
         "否",
         "",
-        ""
+        "",
+        input_method,
+        photo_message_id
     ])
 
 
-def update_cup_record(existing_record, cups):
+def update_cup_record(
+    existing_record,
+    cups,
+    input_method="手動",
+    photo_message_id=""
+):
     spreadsheet = get_shift_spreadsheet()
     sheet = spreadsheet.worksheet("杯數回報")
     row_number = existing_record["_row_number"]
     original_cups = str(existing_record.get("杯數", "")).strip()
     sheet.update(
-        range_name=f"F{row_number}:J{row_number}",
+        range_name=f"F{row_number}:L{row_number}",
         values=[[
             cups,
             existing_record.get("填寫時間", "") or now_time_text(),
             "是",
             original_cups,
-            now_time_text()
+            now_time_text(),
+            input_method,
+            photo_message_id
         ]]
     )
 
@@ -508,6 +546,65 @@ def finish_cup_flow(user_id):
     state.pop("step", None)
     state.pop("cup_report", None)
     user_states[user_id] = state
+
+
+def submit_cup_value(event, user_id, state, cups):
+    shift = state.get("data", {})
+    cup_report = state.setdefault("cup_report", {})
+    report_date = cup_report.get("date")
+    photo_message_id = cup_report.get("photo_message_id", "")
+    input_method = "照片辨識" if photo_message_id else "手動"
+    try:
+        existing = find_cup_record(
+            user_id,
+            shift.get("shift_name", ""),
+            report_date
+        )
+    except Exception as e:
+        print("[ERROR] 查詢杯數紀錄失敗:", e)
+        reply_to_line(event, "查詢既有杯數資料時發生問題，請稍後再試。")
+        return True
+
+    if not existing:
+        try:
+            write_new_cup_record(
+                user_id,
+                shift,
+                report_date,
+                cups,
+                input_method,
+                photo_message_id
+            )
+        except Exception as e:
+            print("[ERROR] 寫入杯數紀錄失敗:", e)
+            reply_to_line(event, "寫入杯數資料時發生問題，請稍後再試。")
+            return True
+
+        finish_cup_flow(user_id)
+        reply_to_line(event, f"🥤 {report_date} 杯數回報完成：{cups} 杯")
+        return True
+
+    existing_cups = int(str(existing.get("杯數", "0")).strip() or 0)
+    if existing_cups == cups:
+        finish_cup_flow(user_id)
+        reply_to_line(
+            event,
+            f"此日杯數已填寫（{existing_cups} 杯），資料相同無需重複填寫。"
+        )
+        return True
+
+    cup_report["proposed_cups"] = cups
+    cup_report["existing_record"] = existing
+    state["step"] = "waiting_cup_update_confirm"
+    user_states[user_id] = state
+    reply_to_line(
+        event,
+        f"⚠️ 您 {report_date} 已填寫過杯數：{existing_cups} 杯\n"
+        f"您現在輸入：{cups} 杯\n"
+        "數字不同，確認要修改嗎？",
+        quick_reply=cup_update_quick_reply()
+    )
+    return True
 
 
 def handle_cup_report_text(event, user_id, user_message):
@@ -534,12 +631,34 @@ def handle_cup_report_text(event, user_id, user_message):
             return True
 
         cup_report["date"] = selected_date
-        state["step"] = "waiting_cup_count"
+        state["step"] = "waiting_cup_input_method"
         user_states[user_id] = state
         reply_to_line(
             event,
-            f"請輸入 {selected_date} 的杯數（正整數）。\n"
-            "照片辨識會在第五階段開放，目前請直接輸入數字。"
+            f"請選擇 {selected_date} 的杯數填寫方式：",
+            quick_reply=input_method_quick_reply()
+        )
+        return True
+
+    if step == "waiting_cup_input_method":
+        if message in ["📷 拍照辨識", "拍照辨識", "拍照"]:
+            state["step"] = "waiting_cup_photo"
+            user_states[user_id] = state
+            reply_to_line(
+                event,
+                "請上傳收銀機畫面或手寫杯數紀錄照片。\n"
+                "請讓杯數數字清楚、完整入鏡。"
+            )
+            return True
+        if message in ["✏️ 手動輸入", "手動輸入", "手動"]:
+            state["step"] = "waiting_cup_count"
+            user_states[user_id] = state
+            reply_to_line(event, "請輸入杯數（大於 0 的正整數）。")
+            return True
+        reply_to_line(
+            event,
+            "請選擇拍照辨識或手動輸入。",
+            quick_reply=input_method_quick_reply()
         )
         return True
 
@@ -548,50 +667,21 @@ def handle_cup_report_text(event, user_id, user_message):
             reply_to_line(event, "杯數必須是大於 0 的整數，請重新輸入。")
             return True
 
-        cups = int(message)
-        report_date = cup_report.get("date")
-        try:
-            existing = find_cup_record(
-                user_id,
-                shift.get("shift_name", ""),
-                report_date
-            )
-        except Exception as e:
-            print("[ERROR] 查詢杯數紀錄失敗:", e)
-            reply_to_line(event, "查詢既有杯數資料時發生問題，請稍後再試。")
+        return submit_cup_value(event, user_id, state, int(message))
+
+    if step == "waiting_cup_ai_confirm":
+        if message in ["✅ AI辨識正確", "AI辨識正確", "正確"]:
+            cups = cup_report.get("ai_cups")
+            return submit_cup_value(event, user_id, state, cups)
+        if message in ["✏️ 修改AI結果", "修改AI結果", "修改"]:
+            state["step"] = "waiting_cup_count"
+            user_states[user_id] = state
+            reply_to_line(event, "請輸入正確杯數（大於 0 的正整數）。")
             return True
-
-        if not existing:
-            try:
-                write_new_cup_record(user_id, shift, report_date, cups)
-            except Exception as e:
-                print("[ERROR] 寫入杯數紀錄失敗:", e)
-                reply_to_line(event, "寫入杯數資料時發生問題，請稍後再試。")
-                return True
-
-            finish_cup_flow(user_id)
-            reply_to_line(event, f"🥤 {report_date} 杯數回報完成：{cups} 杯")
-            return True
-
-        existing_cups = int(str(existing.get("杯數", "0")).strip() or 0)
-        if existing_cups == cups:
-            finish_cup_flow(user_id)
-            reply_to_line(
-                event,
-                f"此日杯數已填寫（{existing_cups} 杯），資料相同無需重複填寫。"
-            )
-            return True
-
-        cup_report["proposed_cups"] = cups
-        cup_report["existing_record"] = existing
-        state["step"] = "waiting_cup_update_confirm"
-        user_states[user_id] = state
         reply_to_line(
             event,
-            f"⚠️ 您 {report_date} 已填寫過杯數：{existing_cups} 杯\n"
-            f"您現在輸入：{cups} 杯\n"
-            "數字不同，確認要修改嗎？",
-            quick_reply=cup_update_quick_reply()
+            "請確認 AI 辨識結果是否正確。",
+            quick_reply=ai_result_quick_reply()
         )
         return True
 
@@ -601,7 +691,12 @@ def handle_cup_report_text(event, user_id, user_message):
             cups = cup_report.get("proposed_cups")
             report_date = cup_report.get("date")
             try:
-                update_cup_record(existing, cups)
+                update_cup_record(
+                    existing,
+                    cups,
+                    "照片辨識" if cup_report.get("photo_message_id") else "手動",
+                    cup_report.get("photo_message_id", "")
+                )
             except Exception as e:
                 print("[ERROR] 修改杯數紀錄失敗:", e)
                 reply_to_line(event, "修改杯數資料時發生問題，請稍後再試。")
@@ -1217,7 +1312,7 @@ def reset_expense_entry(user_id, keep_date=True):
     state["expense_report"] = {}
     if report_date:
         state["expense_report"]["date"] = report_date
-    state["step"] = "waiting_expense_description" if report_date else "waiting_expense_date"
+    state["step"] = "waiting_expense_input_method" if report_date else "waiting_expense_date"
     user_states[user_id] = state
 
 
@@ -1265,7 +1360,8 @@ def find_duplicate_expenses(user_id, report_date, amount):
 
 def write_expense_record(user_id, shift, expense_report):
     amount = expense_report["amount"]
-    review_status = "待審核" if amount > 2000 else "免審核"
+    has_receipt = expense_report.get("has_receipt") is True
+    review_status = "待審核" if not has_receipt and amount > 2000 else "免審核"
     spreadsheet = get_shift_spreadsheet()
     sheet = spreadsheet.worksheet("費用支出")
     sheet.append_row([
@@ -1278,9 +1374,9 @@ def write_expense_record(user_id, shift, expense_report):
         format_expense_amount(amount),
         expense_report.get("payment_method", ""),
         expense_report.get("payment_note", ""),
-        "無",
-        expense_report.get("no_receipt_reason", ""),
-        "",
+        "有" if has_receipt else "無",
+        "" if has_receipt else expense_report.get("no_receipt_reason", ""),
+        expense_report.get("photo_message_id", ""),
         "已確認非重複" if expense_report.get("duplicate_confirmed") else "未發現重複",
         review_status,
         now_time_text()
@@ -1292,15 +1388,20 @@ def show_expense_summary(event, expense_report):
     payment_text = expense_report.get("payment_method", "")
     if expense_report.get("payment_note"):
         payment_text += f"（{expense_report['payment_note']}）"
+    lines = [
+        "請確認本筆支出：",
+        f"日期：{expense_report.get('date', '')}",
+        f"說明：{expense_report.get('description', '')}",
+        f"金額：NT${format_expense_amount(expense_report.get('amount', 0))}",
+        f"付款方式：{payment_text}",
+        f"憑證：{'有' if expense_report.get('has_receipt') else '無'}"
+    ]
+    if not expense_report.get("has_receipt"):
+        lines.append(f"無憑證原因：{expense_report.get('no_receipt_reason', '')}")
+    lines.extend(["", "請確認是否送出。"])
     reply_to_line(
         event,
-        "請確認本筆支出：\n"
-        f"日期：{expense_report.get('date', '')}\n"
-        f"說明：{expense_report.get('description', '')}\n"
-        f"金額：NT${format_expense_amount(expense_report.get('amount', 0))}\n"
-        f"付款方式：{payment_text}\n"
-        f"無憑證原因：{expense_report.get('no_receipt_reason', '')}\n\n"
-        "請確認是否送出。",
+        "\n".join(lines),
         quick_reply=expense_submit_quick_reply()
     )
 
@@ -1355,9 +1456,36 @@ def handle_expense_report_text(event, user_id, user_message):
             return True
 
         expense_report["date"] = selected_date
-        state["step"] = "waiting_expense_description"
+        state["step"] = "waiting_expense_input_method"
         user_states[user_id] = state
-        reply_to_line(event, "請輸入支出說明，例如：冰塊採購。")
+        reply_to_line(
+            event,
+            "請選擇支出填寫方式：",
+            quick_reply=input_method_quick_reply()
+        )
+        return True
+
+    if step == "waiting_expense_input_method":
+        if message in ["📷 拍照辨識", "拍照辨識", "拍照"]:
+            expense_report["has_receipt"] = True
+            state["step"] = "waiting_expense_photo"
+            user_states[user_id] = state
+            reply_to_line(
+                event,
+                "請上傳收據或憑證照片。\n請讓店名、品項與總金額清楚入鏡。"
+            )
+            return True
+        if message in ["✏️ 手動輸入", "手動輸入", "手動"]:
+            expense_report["has_receipt"] = False
+            state["step"] = "waiting_expense_description"
+            user_states[user_id] = state
+            reply_to_line(event, "請輸入支出說明，例如：冰塊採購。")
+            return True
+        reply_to_line(
+            event,
+            "請選擇拍照辨識或手動輸入。",
+            quick_reply=input_method_quick_reply()
+        )
         return True
 
     if step == "waiting_expense_description":
@@ -1376,12 +1504,39 @@ def handle_expense_report_text(event, user_id, user_message):
             reply_to_line(event, "支出金額必須是大於 0 的數字，請重新輸入。")
             return True
         expense_report["amount"] = amount
-        state["step"] = "waiting_no_receipt_reason"
-        user_states[user_id] = state
+        if expense_report.get("has_receipt"):
+            state["step"] = "waiting_payment_method"
+            user_states[user_id] = state
+            reply_to_line(
+                event,
+                "請選擇付款方式：",
+                quick_reply=payment_method_quick_reply()
+            )
+        else:
+            state["step"] = "waiting_no_receipt_reason"
+            user_states[user_id] = state
+            reply_to_line(event, "請輸入沒有收據或憑證的原因。")
+        return True
+
+    if step == "waiting_expense_ai_confirm":
+        if message in ["✅ AI辨識正確", "AI辨識正確", "正確"]:
+            state["step"] = "waiting_payment_method"
+            user_states[user_id] = state
+            reply_to_line(
+                event,
+                "請選擇付款方式：",
+                quick_reply=payment_method_quick_reply()
+            )
+            return True
+        if message in ["✏️ 修改AI結果", "修改AI結果", "修改"]:
+            state["step"] = "waiting_expense_description"
+            user_states[user_id] = state
+            reply_to_line(event, "請輸入正確的支出說明。")
+            return True
         reply_to_line(
             event,
-            "本階段為手動無憑證填寫。\n"
-            "請輸入沒有收據或憑證的原因。"
+            "請確認 AI 辨識結果是否正確。",
+            quick_reply=ai_result_quick_reply()
         )
         return True
 
@@ -1493,7 +1648,11 @@ def handle_expense_report_text(event, user_id, user_message):
     if step == "waiting_expense_continue":
         if message in ["➕ 新增一筆支出", "新增一筆支出", "新增一筆"]:
             reset_expense_entry(user_id, keep_date=True)
-            reply_to_line(event, "請輸入下一筆支出說明。")
+            reply_to_line(
+                event,
+                "請選擇下一筆支出的填寫方式：",
+                quick_reply=input_method_quick_reply()
+            )
             return True
         if message in ["✅ 支出完成", "支出完成", "完成"]:
             finish_expense_flow(user_id)
@@ -1826,25 +1985,135 @@ def richmenu_preview_route():
     return send_file(image_path, mimetype="image/png")
 
 
+def parse_ai_json(text):
+    cleaned = str(text or "").strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+    if not match:
+        raise ValueError("AI 未回傳 JSON")
+    return json.loads(match.group(0))
+
+
+def analyze_image_as_json(image_path, prompt):
+    image_file = genai.upload_file(image_path)
+    response = model.generate_content(
+        [prompt, image_file],
+        generation_config={
+            "temperature": 0,
+            "max_output_tokens": 512,
+            "response_mime_type": "application/json"
+        }
+    )
+    return parse_ai_json(response.text)
+
+
+def handle_cup_photo_result(event, user_id, image_path, message_id):
+    state = user_states.get(user_id, {})
+    cup_report = state.setdefault("cup_report", {})
+    try:
+        result = analyze_image_as_json(
+            image_path,
+            """辨識這張收銀機畫面或手寫紀錄中的「總杯數」。
+只回傳 JSON：
+{"cups": 正整數或null, "confidence": 0到1, "note": "簡短說明"}
+不要把金額、訂單編號或日期當成杯數。無法確定時 cups 回傳 null。"""
+        )
+        cups = result.get("cups")
+        if not isinstance(cups, int) or cups <= 0:
+            raise ValueError("找不到可靠的正整數杯數")
+
+        cup_report["ai_cups"] = cups
+        cup_report["photo_message_id"] = message_id
+        state["step"] = "waiting_cup_ai_confirm"
+        user_states[user_id] = state
+        reply_to_line(
+            event,
+            f"AI 辨識杯數：{cups} 杯\n請確認是否正確。",
+            quick_reply=ai_result_quick_reply()
+        )
+    except Exception as e:
+        print("[ERROR] 杯數照片辨識失敗:", e)
+        state["step"] = "waiting_cup_count"
+        user_states[user_id] = state
+        reply_to_line(
+            event,
+            "杯數照片辨識失敗，請直接輸入正確杯數（大於 0 的正整數）。"
+        )
+
+
+def handle_expense_photo_result(event, user_id, image_path, message_id):
+    state = user_states.get(user_id, {})
+    expense_report = state.setdefault("expense_report", {})
+    try:
+        result = analyze_image_as_json(
+            image_path,
+            """辨識這張收據或付款憑證。
+只回傳 JSON：
+{"description": "支出品項或商店名稱", "amount": 數字或null,
+ "note": "收據上的簡短備註", "confidence": 0到1}
+amount 必須是收據最終應付總額，不要使用統編、日期或找零。無法確定時回傳 null。"""
+        )
+        description = str(result.get("description", "")).strip()
+        amount = result.get("amount")
+        if not description or not isinstance(amount, (int, float)) or amount <= 0:
+            raise ValueError("找不到可靠的支出說明或總額")
+
+        expense_report.update({
+            "description": description[:100],
+            "amount": float(amount),
+            "has_receipt": True,
+            "photo_message_id": message_id,
+            "receipt_note": str(result.get("note", "")).strip()[:100],
+            "no_receipt_reason": ""
+        })
+        state["step"] = "waiting_expense_ai_confirm"
+        user_states[user_id] = state
+        reply_to_line(
+            event,
+            "AI 辨識結果：\n"
+            f"支出說明：{expense_report['description']}\n"
+            f"支出費用：NT${format_expense_amount(expense_report['amount'])}\n"
+            "請確認是否正確。",
+            quick_reply=ai_result_quick_reply()
+        )
+    except Exception as e:
+        print("[ERROR] 收據照片辨識失敗:", e)
+        expense_report["has_receipt"] = False
+        expense_report.pop("photo_message_id", None)
+        state["step"] = "waiting_expense_description"
+        user_states[user_id] = state
+        reply_to_line(
+            event,
+            "收據辨識失敗，已切換為手動填寫。\n請輸入支出說明。"
+        )
+
+
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image_message(event):
     user_id = event.source.user_id
     state = user_states.get(user_id, {})
-    if state.get("flow") == "report_cups":
-        reply_to_line(
-            event,
-            "杯數照片辨識會在第五階段開放，目前請直接輸入杯數數字。"
-        )
-        return
-
     if state.get("flow") == "report_mileage":
         reply_to_line(event, "里程回報請直接輸入儀表板公里數，不需要上傳照片。")
         return
 
-    if state.get("flow") == "report_expense":
+    if (
+        state.get("flow") == "report_cups"
+        and state.get("step") != "waiting_cup_photo"
+    ):
         reply_to_line(
             event,
-            "收據照片辨識會在第五階段開放，目前請依照提示手動填寫。"
+            "目前不是等待杯數照片的步驟，請依照 Bot 提示操作。"
+        )
+        return
+
+    if (
+        state.get("flow") == "report_expense"
+        and state.get("step") != "waiting_expense_photo"
+    ):
+        reply_to_line(
+            event,
+            "目前不是等待收據照片的步驟，請依照 Bot 提示操作。"
         )
         return
 
@@ -1859,6 +2128,14 @@ def handle_image_message(event):
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_file:
             temp_file.write(image_content)
             image_path = temp_file.name
+
+        if state.get("flow") == "report_cups":
+            handle_cup_photo_result(event, user_id, image_path, message_id)
+            return
+
+        if state.get("flow") == "report_expense":
+            handle_expense_photo_result(event, user_id, image_path, message_id)
+            return
 
         image_file = genai.upload_file(image_path)
 
