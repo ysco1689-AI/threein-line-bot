@@ -53,7 +53,6 @@ MATERIAL_ALIASES = {
     "牛奶": ["牛奶"],
     "奶水": ["奶水"],
     "冰塊": ["冰塊", "冰"],
-    "水": ["水"],
     "660紙杯": ["紙杯", "杯子", "660"],
     "杯蓋": ["杯蓋", "蓋子"],
     "大吸管": ["大吸管", "粗管"],
@@ -61,9 +60,31 @@ MATERIAL_ALIASES = {
     "1杯袋": ["1杯袋", "單杯袋"],
     "2杯袋": ["2杯袋"],
     "4杯袋": ["4杯袋"],
-    "衛生紙+濕紙巾": ["衛生紙", "濕紙巾"],
     "封口膜": ["封口膜", "封膜"],
     "試飲杯": ["試飲杯", "試飲"],
+}
+
+MATERIAL_SETUP_LABELS = {
+    "仙草甘茶": "仙甘（包）",
+    "大井紅茶": "大紅（小包）",
+    "青茶": "青茶（小包）",
+    "麥香紅茶": "麥香紅（小包）",
+    "冬瓜茶": "冬瓜（小包）",
+    "糖液": "糖液（桶）",
+    "仙草凍": "仙草凍（罐）",
+    "檸檬汁": "檸檬汁（罐）",
+    "牛奶": "牛奶（罐）",
+    "奶水": "奶水（罐）",
+    "660紙杯": "660紙杯（20條／箱）",
+    "杯蓋": "杯蓋（個）",
+    "大吸管": "大吸管（包）",
+    "小吸管": "小吸管（包）",
+    "1杯袋": "1杯袋（包）",
+    "2杯袋": "2杯袋（包）",
+    "4杯袋": "4杯袋（包）",
+    "封口膜": "封口膜（捲）",
+    "試飲杯": "試飲杯（40條／箱）",
+    "冰塊": "冰塊（包）",
 }
 
 CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
@@ -1892,6 +1913,49 @@ def extract_material_quantity(message, setting):
     return int(numbers[-1]) if numbers else None
 
 
+def build_material_initial_template(settings):
+    lines = [
+        "請複製以下清單，在冒號後填入數字，再整段貼回。",
+        "沒有帶出的品項保持空白即可：",
+        ""
+    ]
+    for setting in settings:
+        label = MATERIAL_SETUP_LABELS.get(
+            setting["name"],
+            f"{setting['aliases'][-1]}（{setting['unit']}）"
+        )
+        lines.append(f"{label}：")
+    return "\n".join(lines)
+
+
+def parse_material_initial_batch(message, settings):
+    entries = {}
+    errors = []
+    for raw_line in str(message or "").splitlines():
+        line = raw_line.strip()
+        if not line or ("：" not in line and ":" not in line):
+            continue
+        parts = re.split(r"[：:]", line, maxsplit=1)
+        label = parts[0].strip()
+        value_text = parts[1].strip()
+        if not value_text:
+            continue
+        quantity_match = re.search(r"\d[\d,]*", value_text)
+        if not quantity_match:
+            errors.append(f"{label}：請填數字")
+            continue
+        setting = find_material_setting(label, settings)
+        if not setting:
+            errors.append(f"{label}：找不到品項")
+            continue
+        quantity = parse_material_quantity(quantity_match.group(0))
+        if quantity is None:
+            errors.append(f"{label}：數量格式錯誤")
+            continue
+        entries[setting["name"]] = (setting, quantity)
+    return list(entries.values()), errors
+
+
 def get_shift_material_initial_records():
     spreadsheet = get_shift_spreadsheet()
     sheet = spreadsheet.worksheet("檔期原料帶出")
@@ -2245,11 +2309,7 @@ def start_material_report_flow(event, user_id):
             event,
             shift_summary
             + "⚙️ 此檔期尚未設定原料帶出量。\n"
-            "請逐筆輸入本次實際帶出的數量，例如：\n"
-            "仙甘50包\n"
-            "大紅30包\n"
-            "紙杯10條\n\n"
-            "沒有帶出的品項不用輸入，全部完成後按「✅ 帶出完成」。",
+            + build_material_initial_template(settings),
             quick_reply=material_setup_quick_reply()
         )
         return
@@ -2301,10 +2361,8 @@ def handle_material_report_text(event, user_id, user_message):
         user_states[user_id] = state
         reply_to_line(
             event,
-            "⚙️ 請輸入要新增或修改的帶出量，例如：\n"
-            "仙甘50包\n"
-            "紙杯10條\n\n"
-            "完成後按「✅ 帶出完成」。",
+            "⚙️ 請設定或修改本檔期帶出量。\n"
+            + build_material_initial_template(settings),
             quick_reply=material_setup_quick_reply()
         )
         return True
@@ -2340,6 +2398,52 @@ def handle_material_report_text(event, user_id, user_message):
             except Exception as e:
                 print("[ERROR] 顯示檔期原料帶出失敗:", e)
                 reply_to_line(event, "讀取帶出設定時發生問題，請稍後再試。")
+            return True
+
+        batch_entries, batch_errors = parse_material_initial_batch(
+            message,
+            settings
+        )
+        if batch_entries:
+            saved_lines = []
+            try:
+                for setting, quantity in batch_entries:
+                    save_shift_material_initial(
+                        user_id,
+                        shift,
+                        setting,
+                        quantity
+                    )
+                    setting_with_initial = dict(setting)
+                    setting_with_initial["initial"] = quantity
+                    recompute_material_balances(
+                        shift,
+                        setting_with_initial
+                    )
+                    saved_lines.append(
+                        f"{setting['name']} {quantity} {setting['unit']}"
+                    )
+            except Exception as e:
+                print("[ERROR] 批次儲存檔期原料帶出失敗:", e)
+                reply_to_line(event, "儲存帶出量時發生問題，請稍後再試。")
+                return True
+
+            reply_lines = [
+                f"✅ 已設定 {len(saved_lines)} 項帶出量：",
+                *saved_lines
+            ]
+            if batch_errors:
+                reply_lines.extend([
+                    "",
+                    "以下內容未寫入：",
+                    *batch_errors
+                ])
+            reply_lines.append("\n確認無誤後按「✅ 帶出完成」。")
+            reply_to_line(
+                event,
+                "\n".join(reply_lines),
+                quick_reply=material_setup_quick_reply()
+            )
             return True
 
         setting = find_material_setting(message, settings)
