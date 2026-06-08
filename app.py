@@ -1829,13 +1829,13 @@ def material_confirm_quick_reply():
 def material_continue_quick_reply():
     return QuickReply(items=[
         QuickReplyItem(
-            action=MessageAction(label="⚙️ 設定帶出量", text="設定帶出量")
+            action=MessageAction(label="➖ 支出數量", text="支出數量")
         ),
         QuickReplyItem(
-            action=MessageAction(label="✏️ 修正誤差", text="修正誤差")
+            action=MessageAction(label="➕ 入庫數量", text="入庫數量")
         ),
         QuickReplyItem(
-            action=MessageAction(label="📦 餘料總表", text="餘料總表")
+            action=MessageAction(label="📦 餘量查詢", text="餘量查詢")
         ),
         QuickReplyItem(
             action=MessageAction(label="✅ 完成", text="✅ 餘料完成")
@@ -1860,6 +1860,13 @@ def parse_material_quantity(value):
         return None
     quantity = int(text)
     return quantity if quantity >= 0 else None
+
+
+def parse_material_transaction_quantity(value):
+    text = str(value or "").strip().replace(",", "")
+    if not re.fullmatch(r"-?\d+", text):
+        return None
+    return int(text)
 
 
 def load_material_settings():
@@ -2178,7 +2185,9 @@ def calculate_material_used(
         end_date,
         material_name
     ):
-        quantity = parse_material_quantity(row.get("本次使用量", ""))
+        quantity = parse_material_transaction_quantity(
+            row.get("本次使用量", "")
+        )
         if quantity is not None:
             total += quantity
     return total
@@ -2234,7 +2243,9 @@ def recompute_material_balances(shift, setting):
     )
     remaining = setting["initial"]
     for row in records:
-        quantity = parse_material_quantity(row.get("本次使用量", "")) or 0
+        quantity = parse_material_transaction_quantity(
+            row.get("本次使用量", "")
+        ) or 0
         remaining -= quantity
         sheet.update_acell(f"K{row['_row_number']}", remaining)
     return remaining
@@ -2257,7 +2268,9 @@ def recompute_material_balances_batch(shift, settings):
             setting["name"]
         )
         for row in matching_records:
-            quantity = parse_material_quantity(row.get("本次使用量", "")) or 0
+            quantity = parse_material_transaction_quantity(
+                row.get("本次使用量", "")
+            ) or 0
             remaining -= quantity
             update_requests.append({
                 "range": f"K{row['_row_number']}",
@@ -2306,7 +2319,7 @@ def update_material_record(existing_record, shift, setting, quantity):
 def show_material_total(event, shift, settings):
     records = get_material_records()
     initials = get_shift_material_initials(shift)
-    lines = [f"📦 餘料總表（{material_report_date(shift)[5:]} 更新）"]
+    lines = [f"📦 目前餘量（{material_report_date(shift)[5:]} 更新）"]
     for setting in settings:
         initial = initials.get(setting["name"])
         if initial is None:
@@ -2395,19 +2408,18 @@ def start_material_report_flow(event, user_id):
             event,
             shift_summary
             + "⚙️ 此檔期尚未設定原料帶出量。\n"
-            + build_material_initial_template(settings),
-            quick_reply=material_setup_quick_reply()
+            + build_material_initial_template(settings)
         )
         return
 
     reply_to_line(
         event,
         shift_summary
-        + "📦 請直接輸入餘料使用量，例如：\n"
-        "仙甘4包\n"
-        "大紅5\n\n"
-        "也可輸入「仙甘剩餘多少」、「餘料總表」或"
-        "點選「修正誤差」。",
+        + "📦 帶出量已設定完成，請選擇操作：\n"
+        "➖ 支出數量：扣除現場使用量\n"
+        "➕ 入庫數量：增加補貨或退回量\n"
+        "📦 餘量查詢：查看目前庫存\n"
+        "✅ 完成：結束本次操作",
         quick_reply=material_continue_quick_reply()
     )
 
@@ -2443,13 +2455,28 @@ def handle_material_report_text(event, user_id, user_message):
         return True
 
     if message in ["設定帶出量", "修改帶出量", "帶出設定"]:
+        try:
+            initials = get_shift_material_initials(shift)
+        except Exception as e:
+            print("[ERROR] 檢查檔期原料帶出失敗:", e)
+            reply_to_line(event, "讀取帶出設定時發生問題，請稍後再試。")
+            return True
+        if initials:
+            state["step"] = "waiting_material_message"
+            user_states[user_id] = state
+            reply_to_line(
+                event,
+                "本檔期帶出量已設定完成，不需要再次設定。\n"
+                "請選擇支出、入庫、餘量查詢或完成。",
+                quick_reply=material_continue_quick_reply()
+            )
+            return True
         state["step"] = "waiting_material_initial"
         user_states[user_id] = state
         reply_to_line(
             event,
-            "⚙️ 請設定或修改本檔期帶出量。\n"
-            + build_material_initial_template(settings),
-            quick_reply=material_setup_quick_reply()
+            "⚙️ 請設定本檔期帶出量。\n"
+            + build_material_initial_template(settings)
         )
         return True
 
@@ -2473,7 +2500,7 @@ def handle_material_report_text(event, user_id, user_message):
             reply_to_line(
                 event,
                 "✅ 本檔期帶出量設定完成。\n"
-                "現在可輸入使用量，例如：仙甘4包。",
+                "請選擇支出數量、入庫數量、餘量查詢或完成。",
                 quick_reply=material_continue_quick_reply()
             )
             return True
@@ -2516,7 +2543,7 @@ def handle_material_report_text(event, user_id, user_message):
                 return True
 
             reply_lines = [
-                f"✅ 已設定 {len(saved_lines)} 項帶出量：",
+                f"✅ 本檔期帶出量設定完成，共 {len(saved_lines)} 項：",
                 *saved_lines
             ]
             if batch_errors:
@@ -2525,11 +2552,15 @@ def handle_material_report_text(event, user_id, user_message):
                     "以下內容未寫入：",
                     *batch_errors
                 ])
-            reply_lines.append("\n確認無誤後按「✅ 帶出完成」。")
+            reply_lines.append(
+                "\n請選擇支出數量、入庫數量、餘量查詢或完成。"
+            )
+            state["step"] = "waiting_material_message"
+            user_states[user_id] = state
             reply_to_line(
                 event,
                 "\n".join(reply_lines),
-                quick_reply=material_setup_quick_reply()
+                quick_reply=material_continue_quick_reply()
             )
             return True
 
@@ -2565,17 +2596,16 @@ def handle_material_report_text(event, user_id, user_message):
             return True
         reply_to_line(
             event,
-            f"⚙️ {setting['name']}帶出量已設定為 "
+            f"✅ {setting['name']}帶出量已設定為 "
             f"{quantity} {setting['unit']}。\n"
-            "可繼續輸入下一項。",
-            quick_reply=material_setup_quick_reply()
+            "請選擇支出數量、入庫數量、餘量查詢或完成。",
+            quick_reply=material_continue_quick_reply()
         )
+        state["step"] = "waiting_material_message"
+        user_states[user_id] = state
         return True
 
-    if step in [
-        "waiting_material_overuse_confirm",
-        "waiting_material_correction_confirm"
-    ]:
+    if step == "waiting_material_overuse_confirm":
         if message in ["❌ 取消餘料", "取消餘料", "取消"]:
             state["step"] = "waiting_material_message"
             state["material_pending"] = {}
@@ -2598,32 +2628,19 @@ def handle_material_report_text(event, user_id, user_message):
         setting = pending.get("setting")
         quantity = pending.get("quantity")
         try:
-            if step == "waiting_material_overuse_confirm":
-                write_material_record(
-                    user_id,
-                    shift,
-                    setting,
-                    quantity,
-                    pending.get("remaining")
-                )
-                remaining = pending.get("remaining")
-                reply_text = (
-                    f"📦 {setting['name']}已使用 {quantity} "
-                    f"{setting['unit']}，目前剩餘 {remaining} "
-                    f"{setting['unit']}。"
-                )
-            else:
-                remaining = update_material_record(
-                    pending["existing_record"],
-                    shift,
-                    setting,
-                    quantity
-                )
-                reply_text = (
-                    f"✅ {setting['name']}已修正為使用 {quantity} "
-                    f"{setting['unit']}，目前剩餘 {remaining} "
-                    f"{setting['unit']}。"
-                )
+            write_material_record(
+                user_id,
+                shift,
+                setting,
+                quantity,
+                pending.get("remaining")
+            )
+            remaining = pending.get("remaining")
+            reply_text = (
+                f"📦 {setting['name']}已支出 {quantity} "
+                f"{setting['unit']}，目前餘量 {remaining} "
+                f"{setting['unit']}。"
+            )
         except Exception as e:
             print("[ERROR] 確認餘料資料失敗:", e)
             reply_to_line(event, "寫入餘料資料時發生問題，請稍後再試。")
@@ -2639,23 +2656,49 @@ def handle_material_report_text(event, user_id, user_message):
         )
         return True
 
-    if compact in ["餘料總表", "總表", "請給我餘料", "餘料清單"]:
+    if message in ["➖ 支出數量", "支出數量"]:
+        state["step"] = "waiting_material_outbound"
+        state["material_pending"] = {}
+        user_states[user_id] = state
+        reply_to_line(
+            event,
+            "➖ 請輸入支出的品項與數量，例如：仙甘4包。",
+            quick_reply=material_continue_quick_reply()
+        )
+        return True
+
+    if message in ["➕ 入庫數量", "入庫數量"]:
+        state["step"] = "waiting_material_inbound"
+        state["material_pending"] = {}
+        user_states[user_id] = state
+        reply_to_line(
+            event,
+            "➕ 請輸入入庫的品項與數量，例如：仙甘10包。",
+            quick_reply=material_continue_quick_reply()
+        )
+        return True
+
+    if compact in [
+        "餘量查詢",
+        "餘料總表",
+        "總表",
+        "請給我餘料",
+        "餘料清單"
+    ]:
         try:
+            state["step"] = "waiting_material_message"
+            state["material_pending"] = {}
+            user_states[user_id] = state
             show_material_total(event, shift, settings)
         except Exception as e:
             print("[ERROR] 顯示餘料總表失敗:", e)
             reply_to_line(event, "讀取餘料總表時發生問題，請稍後再試。")
         return True
 
-    if message in ["✏️ 修正誤差", "修正誤差"]:
-        state["step"] = "waiting_material_correction_message"
-        state["material_pending"] = {}
-        user_states[user_id] = state
+    if step == "waiting_material_message":
         reply_to_line(
             event,
-            "請輸入要修正的品項與正確使用量。\n"
-            "例如：仙甘0包、仙甘30包。\n"
-            "系統會修改本檔期此品項的最新一筆紀錄。",
+            "請先選擇支出數量、入庫數量、餘量查詢或完成。",
             quick_reply=material_continue_quick_reply()
         )
         return True
@@ -2677,8 +2720,7 @@ def handle_material_report_text(event, user_id, user_message):
     if initial is None:
         reply_to_line(
             event,
-            f"{setting['name']}尚未設定本檔期帶出量。\n"
-            "請先點選「⚙️ 設定帶出量」。",
+            f"{setting['name']}不在本檔期的帶出品項中，請確認品項。",
             quick_reply=material_continue_quick_reply()
         )
         return True
@@ -2712,76 +2754,19 @@ def handle_material_report_text(event, user_id, user_message):
         )
         return True
 
-    is_correction_mode = step == "waiting_material_correction_message"
-    correction_words = [
-        "更正",
-        "修改",
-        "改成",
-        "改為",
-        "修正",
-        "修正誤差"
-    ]
     quantity = extract_material_quantity(message, setting)
-    if is_correction_mode or any(word in compact for word in correction_words):
-        if quantity is None:
-            reply_to_line(
-                event,
-                f"請輸入正確使用量，例如：{setting['aliases'][-1]}0{setting['unit']}。"
-            )
-            return True
-        try:
-            existing = find_latest_material_record(
-                user_id,
-                shift.get("shift_name", ""),
-                shift.get("booth", ""),
-                shift.get("start_date", ""),
-                shift.get("end_date", ""),
-                setting["name"]
-            )
-        except Exception as e:
-            print("[ERROR] 查詢餘料修正紀錄失敗:", e)
-            reply_to_line(event, "查詢餘料紀錄時發生問題，請稍後再試。")
-            return True
-        if not existing:
-            reply_to_line(
-                event,
-                f"本檔期尚未有 {setting['name']} 的回報紀錄，"
-                "請直接輸入使用量。"
-            )
-            return True
-        old_quantity = parse_material_quantity(
-            existing.get("本次使用量", "")
-        ) or 0
-        new_remaining = current_remaining + old_quantity - quantity
-        state["step"] = "waiting_material_correction_confirm"
-        state["material_pending"] = {
-            "setting": setting,
-            "quantity": quantity,
-            "remaining": new_remaining,
-            "existing_record": existing
-        }
-        user_states[user_id] = state
-        reply_to_line(
-            event,
-            f"⚠️ {setting['name']}最近一筆紀錄為使用 {old_quantity} "
-            f"{setting['unit']}（剩餘 {current_remaining} {setting['unit']}）。\n"
-            f"修正為使用 {quantity} {setting['unit']}後，"
-            f"剩餘將變為 {new_remaining} {setting['unit']}。\n"
-            "確認修正？",
-            quick_reply=material_confirm_quick_reply()
-        )
-        return True
-
     if quantity is None:
         reply_to_line(
             event,
-            f"請在{setting['name']}後面加上使用數量，例如："
+            f"請在{setting['name']}後面加上數量，例如："
             f"{setting['aliases'][-1]}4{setting['unit']}。"
         )
         return True
 
-    new_remaining = current_remaining - quantity
-    if quantity > current_remaining:
+    is_inbound = step == "waiting_material_inbound"
+    transaction_quantity = -quantity if is_inbound else quantity
+    new_remaining = current_remaining - transaction_quantity
+    if not is_inbound and quantity > current_remaining:
         state["step"] = "waiting_material_overuse_confirm"
         state["material_pending"] = {
             "setting": setting,
@@ -2803,7 +2788,7 @@ def handle_material_report_text(event, user_id, user_message):
             user_id,
             shift,
             setting,
-            quantity,
+            transaction_quantity,
             new_remaining
         )
     except Exception as e:
@@ -2811,10 +2796,14 @@ def handle_material_report_text(event, user_id, user_message):
         reply_to_line(event, "寫入餘料資料時發生問題，請稍後再試。")
         return True
 
+    state["step"] = "waiting_material_message"
+    state["material_pending"] = {}
+    user_states[user_id] = state
+    action_text = "已入庫" if is_inbound else "已支出"
     reply_to_line(
         event,
-        f"📦 {setting['name']}已使用 {quantity} {setting['unit']}，"
-        f"目前剩餘 {new_remaining} {setting['unit']}。",
+        f"📦 {setting['name']}{action_text} {quantity} {setting['unit']}，"
+        f"目前餘量 {new_remaining} {setting['unit']}。",
         quick_reply=material_continue_quick_reply()
     )
     return True
@@ -2901,6 +2890,31 @@ def handle_material_template_recovery(event, user_id, user_message):
     shift = get_confirmed_shift(user_id)
     if not shift:
         reply_to_line(event, "找不到目前檔期，請聯絡主管確認排班。")
+        return True
+
+    try:
+        initials = get_shift_material_initials(shift)
+    except Exception as e:
+        print("[ERROR] 檢查檔期帶出量失敗:", e)
+        reply_to_line(event, "讀取帶出設定時發生問題，請稍後再試。")
+        return True
+
+    if initials:
+        state = user_states.get(user_id, {})
+        state.update({
+            "flow": "report_materials",
+            "step": "waiting_material_message",
+            "data": shift,
+            "material_settings": settings,
+            "material_pending": {}
+        })
+        user_states[user_id] = state
+        reply_to_line(
+            event,
+            "本檔期帶出量已設定完成，不會重複設定。\n"
+            "請選擇支出數量、入庫數量、餘量查詢或完成。",
+            quick_reply=material_continue_quick_reply()
+        )
         return True
 
     state = user_states.get(user_id, {})
