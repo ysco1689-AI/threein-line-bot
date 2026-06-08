@@ -2054,6 +2054,61 @@ def save_shift_material_initial(user_id, shift, setting, quantity):
         ])
 
 
+def save_shift_material_initial_batch(user_id, shift, entries):
+    spreadsheet = get_shift_spreadsheet()
+    sheet = spreadsheet.worksheet("檔期原料帶出")
+    existing_records = get_shift_material_initial_records()
+    existing_by_name = {}
+    for row in existing_records:
+        if (
+            str(row.get("檔期名稱", "")).strip()
+            == str(shift.get("shift_name", "")).strip()
+            and str(row.get("攤位編號", "")).strip()
+            == str(shift.get("booth", "")).strip()
+            and normalize_date_text(row.get("開始日期", ""))
+            == normalize_date_text(shift.get("start_date", ""))
+            and normalize_date_text(row.get("結束日期", ""))
+            == normalize_date_text(shift.get("end_date", ""))
+        ):
+            existing_by_name[str(row.get("品項名稱", "")).strip()] = row
+
+    update_requests = []
+    append_values = []
+    updated_at = f"{today_text()} {now_time_text()}"
+    for setting, quantity in entries:
+        existing = existing_by_name.get(setting["name"])
+        if existing:
+            row_number = existing["_row_number"]
+            update_requests.append({
+                "range": f"F{row_number}:J{row_number}",
+                "values": [[
+                    quantity,
+                    setting["unit"],
+                    shift.get("name", ""),
+                    user_id,
+                    updated_at
+                ]]
+            })
+        else:
+            append_values.append([
+                shift.get("shift_name", ""),
+                shift.get("booth", ""),
+                shift.get("start_date", ""),
+                shift.get("end_date", ""),
+                setting["name"],
+                quantity,
+                setting["unit"],
+                shift.get("name", ""),
+                user_id,
+                updated_at
+            ])
+
+    if update_requests:
+        sheet.batch_update(update_requests)
+    if append_values:
+        sheet.append_rows(append_values)
+
+
 def get_material_records():
     spreadsheet = get_shift_spreadsheet()
     sheet = spreadsheet.worksheet("餘料回報")
@@ -2183,6 +2238,36 @@ def recompute_material_balances(shift, setting):
         remaining -= quantity
         sheet.update_acell(f"K{row['_row_number']}", remaining)
     return remaining
+
+
+def recompute_material_balances_batch(shift, settings):
+    spreadsheet = get_shift_spreadsheet()
+    sheet = spreadsheet.worksheet("餘料回報")
+    records = get_material_records()
+    update_requests = []
+    remaining_by_name = {}
+    for setting in settings:
+        remaining = setting["initial"]
+        matching_records = material_records_for_shift(
+            records,
+            shift.get("shift_name", ""),
+            shift.get("booth", ""),
+            shift.get("start_date", ""),
+            shift.get("end_date", ""),
+            setting["name"]
+        )
+        for row in matching_records:
+            quantity = parse_material_quantity(row.get("本次使用量", "")) or 0
+            remaining -= quantity
+            update_requests.append({
+                "range": f"K{row['_row_number']}",
+                "values": [[remaining]]
+            })
+        remaining_by_name[setting["name"]] = remaining
+
+    if update_requests:
+        sheet.batch_update(update_requests)
+    return remaining_by_name
 
 
 def find_latest_material_record(
@@ -2408,22 +2493,23 @@ def handle_material_report_text(event, user_id, user_message):
         if batch_entries:
             saved_lines = []
             try:
+                save_shift_material_initial_batch(
+                    user_id,
+                    shift,
+                    batch_entries
+                )
+                settings_with_initial = []
                 for setting, quantity in batch_entries:
-                    save_shift_material_initial(
-                        user_id,
-                        shift,
-                        setting,
-                        quantity
-                    )
                     setting_with_initial = dict(setting)
                     setting_with_initial["initial"] = quantity
-                    recompute_material_balances(
-                        shift,
-                        setting_with_initial
-                    )
+                    settings_with_initial.append(setting_with_initial)
                     saved_lines.append(
                         f"{setting['name']} {quantity} {setting['unit']}"
                     )
+                recompute_material_balances_batch(
+                    shift,
+                    settings_with_initial
+                )
             except Exception as e:
                 print("[ERROR] 批次儲存檔期原料帶出失敗:", e)
                 reply_to_line(event, "儲存帶出量時發生問題，請稍後再試。")
@@ -2781,6 +2867,56 @@ def handle_active_flow(event, user_id, user_message):
         return handle_material_report_text(event, user_id, user_message)
 
     return False
+
+
+def handle_material_template_recovery(event, user_id, user_message):
+    colon_lines = [
+        line for line in str(user_message or "").splitlines()
+        if "：" in line or ":" in line
+    ]
+    if len(colon_lines) < 3:
+        return False
+
+    try:
+        settings = load_material_settings()
+        batch_entries, _ = parse_material_initial_batch(
+            user_message,
+            settings
+        )
+    except Exception as e:
+        print("[ERROR] 辨識帶出量清單失敗:", e)
+        return False
+
+    if not batch_entries:
+        return False
+
+    if not check_shift_confirmed(user_id):
+        reply_to_line(
+            event,
+            "這看起來是原料帶出量清單，請先點選「✅ 確認檔期」，"
+            "再進入餘料回報重新貼上。"
+        )
+        return True
+
+    shift = get_confirmed_shift(user_id)
+    if not shift:
+        reply_to_line(event, "找不到目前檔期，請聯絡主管確認排班。")
+        return True
+
+    state = user_states.get(user_id, {})
+    state.update({
+        "flow": "report_materials",
+        "step": "waiting_material_initial",
+        "data": shift,
+        "material_settings": settings,
+        "material_pending": {}
+    })
+    user_states[user_id] = state
+    return handle_material_report_text(
+        event,
+        user_id,
+        user_message
+    )
 
 
 def normalize_text(text):
@@ -3453,6 +3589,9 @@ def handle_message(event):
         return
 
     if handle_active_flow(event, user_id, user_message):
+        return
+
+    if handle_material_template_recovery(event, user_id, user_message):
         return
 
     msg_type = classify_message(user_message)
