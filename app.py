@@ -43,14 +43,14 @@ user_states = {}
 
 MATERIAL_ALIASES = {
     "仙草甘茶": ["仙甘", "仙草甘"],
-    "大井紅茶": ["大紅", "大井紅"],
-    "青茶": ["青茶"],
+    "大井紅茶": ["大紅", "大井紅", "井"],
+    "青茶": ["青茶", "青"],
     "麥香紅茶": ["麥香", "麥香紅"],
-    "冬瓜茶": ["冬瓜"],
+    "冬瓜茶": ["冬瓜", "冬"],
     "糖液": ["糖液", "糖水"],
     "仙草凍": ["仙草凍", "仙凍"],
     "檸檬汁": ["檸檬", "檸檬汁"],
-    "牛奶": ["牛奶"],
+    "牛奶": ["牛奶", "奶"],
     "奶水": ["奶水"],
     "冰塊": ["冰塊", "冰"],
     "660紙杯": ["紙杯", "杯子", "660"],
@@ -1966,6 +1966,25 @@ def parse_material_initial_batch(message, settings):
     return list(entries.values()), errors
 
 
+def parse_material_transaction_batch(message, settings):
+    entries = []
+    errors = []
+    for raw_line in str(message or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        setting = find_material_setting(line, settings)
+        if not setting:
+            errors.append(f"{line}：找不到品項")
+            continue
+        quantity = extract_material_quantity(line, setting)
+        if quantity is None:
+            errors.append(f"{line}：請填數字")
+            continue
+        entries.append((setting, quantity))
+    return entries, errors
+
+
 def get_shift_material_initial_records():
     spreadsheet = get_shift_spreadsheet()
     sheet = spreadsheet.worksheet("檔期原料帶出")
@@ -2228,6 +2247,33 @@ def write_material_record(user_id, shift, setting, quantity, remaining):
         "是" if is_material_final_day(shift, report_date) else "否",
         now_time_text()
     ])
+
+
+def write_material_records_batch(user_id, shift, entries):
+    spreadsheet = get_shift_spreadsheet()
+    sheet = spreadsheet.worksheet("餘料回報")
+    report_date = material_report_date(shift)
+    written_at = now_time_text()
+    rows = []
+    for setting, quantity, remaining in entries:
+        rows.append([
+            report_date,
+            user_id,
+            shift.get("name", ""),
+            shift.get("shift_name", ""),
+            shift.get("booth", ""),
+            shift.get("start_date", ""),
+            shift.get("end_date", ""),
+            setting["name"],
+            setting["initial"],
+            quantity,
+            remaining,
+            setting["unit"],
+            "是" if is_material_final_day(shift, report_date) else "否",
+            written_at
+        ])
+    if rows:
+        sheet.append_rows(rows)
 
 
 def recompute_material_balances(shift, setting):
@@ -2699,6 +2745,84 @@ def handle_material_report_text(event, user_id, user_message):
         reply_to_line(
             event,
             "請先選擇支出數量、入庫數量、餘量查詢或完成。",
+            quick_reply=material_continue_quick_reply()
+        )
+        return True
+
+    batch_entries, batch_errors = parse_material_transaction_batch(
+        message,
+        settings
+    )
+    if len(batch_entries) > 1:
+        try:
+            initials = get_shift_material_initials(shift)
+            records = get_material_records()
+        except Exception as e:
+            print("[ERROR] 讀取批次餘料資料失敗:", e)
+            reply_to_line(event, "讀取餘料資料時發生問題，請稍後再試。")
+            return True
+
+        is_inbound = step == "waiting_material_inbound"
+        remaining_by_name = {}
+        write_entries = []
+        reply_lines = []
+        for setting, quantity in batch_entries:
+            initial = initials.get(setting["name"])
+            if initial is None:
+                batch_errors.append(f"{setting['aliases'][-1]}：不在本檔期帶出品項")
+                continue
+            setting = dict(setting)
+            setting["initial"] = initial
+            if setting["name"] not in remaining_by_name:
+                used = calculate_material_used(
+                    records,
+                    shift.get("shift_name", ""),
+                    shift.get("booth", ""),
+                    shift.get("start_date", ""),
+                    shift.get("end_date", ""),
+                    setting["name"]
+                )
+                remaining_by_name[setting["name"]] = initial - used
+
+            current_remaining = remaining_by_name[setting["name"]]
+            transaction_quantity = -quantity if is_inbound else quantity
+            new_remaining = current_remaining - transaction_quantity
+            if not is_inbound and quantity > current_remaining:
+                batch_errors.append(
+                    f"{setting['name']}：目前餘量 {current_remaining}，支出 {quantity} 會超過"
+                )
+                continue
+            remaining_by_name[setting["name"]] = new_remaining
+            write_entries.append((setting, transaction_quantity, new_remaining))
+            action_text = "入庫" if is_inbound else "支出"
+            reply_lines.append(
+                f"{setting['name']} {action_text} {quantity} {setting['unit']}，餘量 {new_remaining}"
+            )
+
+        if not write_entries:
+            reply_to_line(
+                event,
+                "這批資料沒有成功寫入。\n" + "\n".join(batch_errors),
+                quick_reply=material_continue_quick_reply()
+            )
+            return True
+
+        try:
+            write_material_records_batch(user_id, shift, write_entries)
+        except Exception as e:
+            print("[ERROR] 批次寫入餘料回報失敗:", e)
+            reply_to_line(event, "寫入餘料資料時發生問題，請稍後再試。")
+            return True
+
+        state["step"] = "waiting_material_message"
+        state["material_pending"] = {}
+        user_states[user_id] = state
+        response_lines = [f"✅ 已完成 {len(write_entries)} 筆：", *reply_lines]
+        if batch_errors:
+            response_lines.extend(["", "以下未寫入：", *batch_errors])
+        reply_to_line(
+            event,
+            "\n".join(response_lines),
             quick_reply=material_continue_quick_reply()
         )
         return True
