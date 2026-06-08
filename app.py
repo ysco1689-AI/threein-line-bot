@@ -1832,6 +1832,9 @@ def material_continue_quick_reply():
             action=MessageAction(label="⚙️ 設定帶出量", text="設定帶出量")
         ),
         QuickReplyItem(
+            action=MessageAction(label="✏️ 修正誤差", text="修正誤差")
+        ),
+        QuickReplyItem(
             action=MessageAction(label="📦 餘料總表", text="餘料總表")
         ),
         QuickReplyItem(
@@ -2188,8 +2191,7 @@ def find_latest_material_record(
     booth,
     start_date,
     end_date,
-    material_name,
-    report_date
+    material_name
 ):
     matches = [
         row for row in get_material_records()
@@ -2202,7 +2204,6 @@ def find_latest_material_record(
             and normalize_date_text(row.get("結束日期", ""))
             == normalize_date_text(end_date)
             and str(row.get("品項名稱", "")).strip() == material_name
-            and normalize_date_text(row.get("日期", "")) == report_date
         )
     ]
     return matches[-1] if matches else None
@@ -2321,7 +2322,7 @@ def start_material_report_flow(event, user_id):
         "仙甘4包\n"
         "大紅5\n\n"
         "也可輸入「仙甘剩餘多少」、「餘料總表」或"
-        "「仙甘改成5包」。",
+        "點選「修正誤差」。",
         quick_reply=material_continue_quick_reply()
     )
 
@@ -2533,7 +2534,7 @@ def handle_material_report_text(event, user_id, user_message):
                     quantity
                 )
                 reply_text = (
-                    f"✅ {setting['name']}已更正為使用 {quantity} "
+                    f"✅ {setting['name']}已修正為使用 {quantity} "
                     f"{setting['unit']}，目前剩餘 {remaining} "
                     f"{setting['unit']}。"
                 )
@@ -2558,6 +2559,19 @@ def handle_material_report_text(event, user_id, user_message):
         except Exception as e:
             print("[ERROR] 顯示餘料總表失敗:", e)
             reply_to_line(event, "讀取餘料總表時發生問題，請稍後再試。")
+        return True
+
+    if message in ["✏️ 修正誤差", "修正誤差"]:
+        state["step"] = "waiting_material_correction_message"
+        state["material_pending"] = {}
+        user_states[user_id] = state
+        reply_to_line(
+            event,
+            "請輸入要修正的品項與正確使用量。\n"
+            "例如：仙甘0包、仙甘30包。\n"
+            "系統會修改本檔期此品項的最新一筆紀錄。",
+            quick_reply=material_continue_quick_reply()
+        )
         return True
 
     setting = find_material_setting(message, settings)
@@ -2612,18 +2626,23 @@ def handle_material_report_text(event, user_id, user_message):
         )
         return True
 
+    is_correction_mode = step == "waiting_material_correction_message"
+    correction_words = [
+        "更正",
+        "修改",
+        "改成",
+        "改為",
+        "修正",
+        "修正誤差"
+    ]
     quantity = extract_material_quantity(message, setting)
-    if quantity is None:
-        reply_to_line(
-            event,
-            f"請在{setting['name']}後面加上使用數量，例如："
-            f"{setting['aliases'][-1]}4{setting['unit']}。"
-        )
-        return True
-
-    correction_words = ["更正", "修改", "改成", "改為"]
-    if any(word in compact for word in correction_words):
-        report_date = material_report_date(shift)
+    if is_correction_mode or any(word in compact for word in correction_words):
+        if quantity is None:
+            reply_to_line(
+                event,
+                f"請輸入正確使用量，例如：{setting['aliases'][-1]}0{setting['unit']}。"
+            )
+            return True
         try:
             existing = find_latest_material_record(
                 user_id,
@@ -2631,8 +2650,7 @@ def handle_material_report_text(event, user_id, user_message):
                 shift.get("booth", ""),
                 shift.get("start_date", ""),
                 shift.get("end_date", ""),
-                setting["name"],
-                report_date
+                setting["name"]
             )
         except Exception as e:
             print("[ERROR] 查詢餘料修正紀錄失敗:", e)
@@ -2641,7 +2659,7 @@ def handle_material_report_text(event, user_id, user_message):
         if not existing:
             reply_to_line(
                 event,
-                f"今日尚未有 {setting['name']} 的回報紀錄，"
+                f"本檔期尚未有 {setting['name']} 的回報紀錄，"
                 "請直接輸入使用量。"
             )
             return True
@@ -2659,12 +2677,20 @@ def handle_material_report_text(event, user_id, user_message):
         user_states[user_id] = state
         reply_to_line(
             event,
-            f"⚠️ {setting['name']}原紀錄為使用 {old_quantity} "
+            f"⚠️ {setting['name']}最近一筆紀錄為使用 {old_quantity} "
             f"{setting['unit']}（剩餘 {current_remaining} {setting['unit']}）。\n"
-            f"更正為使用 {quantity} {setting['unit']}後，"
+            f"修正為使用 {quantity} {setting['unit']}後，"
             f"剩餘將變為 {new_remaining} {setting['unit']}。\n"
-            "確認更正？",
+            "確認修正？",
             quick_reply=material_confirm_quick_reply()
+        )
+        return True
+
+    if quantity is None:
+        reply_to_line(
+            event,
+            f"請在{setting['name']}後面加上使用數量，例如："
+            f"{setting['aliases'][-1]}4{setting['unit']}。"
         )
         return True
 
