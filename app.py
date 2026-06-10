@@ -21,6 +21,7 @@ from linebot.v3.messaging import (
     MessagingApi,
     MessagingApiBlob,
     ReplyMessageRequest,
+    PushMessageRequest,
     TextMessage,
     QuickReply,
     QuickReplyItem,
@@ -111,6 +112,24 @@ EVENT_HEADERS = [
     "建立時間",
 ]
 
+REMINDER_HEADERS = [
+    "日期",
+    "LINE_ID",
+    "提醒類型",
+    "發送時間",
+    "發送結果",
+    "錯誤訊息",
+]
+
+MATERIAL_COMPLETION_HEADERS = [
+    "日期",
+    "LINE_ID",
+    "姓名",
+    "檔期名稱",
+    "攤位編號",
+    "完成時間",
+]
+
 CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
 CHANNEL_SECRET = os.getenv("CHANNEL_SECRET")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -123,6 +142,7 @@ SHIFT_SPREADSHEET_ID = os.getenv("SHIFT_SPREADSHEET_ID", SPREADSHEET_ID)
 CUP_PHOTO_FOLDER_ID = os.getenv("CUP_PHOTO_FOLDER_ID")
 EXPENSE_PHOTO_FOLDER_ID = os.getenv("EXPENSE_PHOTO_FOLDER_ID")
 EVENT_PHOTO_FOLDER_ID = os.getenv("EVENT_PHOTO_FOLDER_ID")
+REMINDER_API_KEY = os.getenv("REMINDER_API_KEY", os.getenv("ADMIN_SETUP_KEY", ""))
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-2.5-flash")
@@ -253,6 +273,17 @@ def reply_to_line(event, reply_text, quick_reply=None):
             )
     except Exception as e:
         print(f"[ERROR] reply_to_line 失敗: {e}")
+
+
+def push_message(user_id, text):
+    with ApiClient(configuration) as api_client:
+        line_bot_api = MessagingApi(api_client)
+        line_bot_api.push_message(
+            PushMessageRequest(
+                to=user_id,
+                messages=[TextMessage(text=text)]
+            )
+        )
 
 
 def get_spreadsheet():
@@ -412,6 +443,55 @@ def find_accessible_shift(user_id):
             }
 
     return None
+
+
+def find_latest_started_shift(user_id):
+    today = parse_date(today_text())
+    spreadsheet = get_shift_spreadsheet()
+    sheet = spreadsheet.worksheet("排班表")
+    rows = get_records_by_header(sheet, "LINE_ID")
+    matches = []
+    for row in rows:
+        if str(row.get("LINE_ID", "")).strip() != user_id:
+            continue
+        status = str(row.get("狀態", "啟用")).strip()
+        if status and status not in ["啟用", "active", "Active", "ACTIVE"]:
+            continue
+        start_date = parse_date(row.get("開始日期", ""))
+        end_date = parse_date(row.get("結束日期", ""))
+        if not start_date or not end_date or start_date > today:
+            continue
+        matches.append((end_date, row))
+    if not matches:
+        return None
+    matches.sort(key=lambda item: item[0], reverse=True)
+    end_date, row = matches[0]
+    return {
+        "line_id": user_id,
+        "name": str(row.get("姓名", "")).strip(),
+        "shift_name": str(row.get("檔期名稱", "")).strip(),
+        "booth": str(row.get("攤位編號", "")).strip(),
+        "start_date": normalize_date_text(row.get("開始日期", "")),
+        "end_date": end_date.strftime("%Y/%m/%d")
+    }
+
+
+def check_shift_deadline(shift):
+    end_date = parse_date(shift.get("end_date", "")) if shift else None
+    today = parse_date(today_text())
+    return bool(end_date and today and today <= end_date + timedelta(days=1))
+
+
+def require_report_access(event, user_id):
+    try:
+        latest_shift = find_latest_started_shift(user_id)
+    except Exception as e:
+        print("[ERROR] 檢查檔期截止時間失敗:", e)
+        latest_shift = None
+    if latest_shift and not check_shift_deadline(latest_shift):
+        reply_to_line(event, "此檔期已關閉，如需修改請聯絡主管。")
+        return False
+    return require_shift_confirmed(event, user_id)
 
 
 def find_today_shift(user_id):
@@ -2541,6 +2621,40 @@ def finish_material_flow(user_id):
     user_states[user_id] = state
 
 
+def write_material_completion(user_id, shift):
+    spreadsheet = get_shift_spreadsheet()
+    try:
+        sheet = spreadsheet.worksheet("餘料完成紀錄")
+    except gspread.WorksheetNotFound:
+        sheet = spreadsheet.add_worksheet(
+            title="餘料完成紀錄",
+            rows=1000,
+            cols=len(MATERIAL_COMPLETION_HEADERS)
+        )
+        sheet.append_row(MATERIAL_COMPLETION_HEADERS)
+
+    rows = get_records_by_header(sheet, "LINE_ID")
+    already_completed = any(
+        str(row.get("LINE_ID", "")).strip() == user_id
+        and normalize_date_text(row.get("日期", "")) == today_text()
+        and str(row.get("檔期名稱", "")).strip()
+        == str(shift.get("shift_name", "")).strip()
+        and str(row.get("攤位編號", "")).strip()
+        == str(shift.get("booth", "")).strip()
+        for row in rows
+    )
+    if already_completed:
+        return
+    sheet.append_row([
+        today_text(),
+        user_id,
+        shift.get("name", ""),
+        shift.get("shift_name", ""),
+        shift.get("booth", ""),
+        now_time_text()
+    ])
+
+
 def handle_material_report_text(event, user_id, user_message):
     state = user_states.get(user_id, {})
     step = state.get("step")
@@ -2558,6 +2672,12 @@ def handle_material_report_text(event, user_id, user_message):
     compact = re.sub(r"\s+", "", message)
 
     if message in ["✅ 餘料完成", "餘料完成", "完成", "退出"]:
+        try:
+            write_material_completion(user_id, shift)
+        except Exception as e:
+            print("[ERROR] 寫入餘料完成紀錄失敗:", e)
+            reply_to_line(event, "記錄餘料完成狀態時發生問題，請稍後再試。")
+            return True
         finish_material_flow(user_id)
         reply_to_line(event, "✅ 餘料回報已完成。")
         return True
@@ -3279,6 +3399,18 @@ def handle_active_flow(event, user_id, user_message):
     if not state or not state.get("flow"):
         return False
 
+    if state.get("flow") in [
+        "report_cups",
+        "report_mileage",
+        "report_expense",
+        "report_materials"
+    ]:
+        shift = state.get("data", {})
+        if shift and not check_shift_deadline(shift):
+            user_states.pop(user_id, None)
+            reply_to_line(event, "此檔期已關閉，如需修改請聯絡主管。")
+            return True
+
     if state.get("flow") == "confirm_shift" and state.get("step") == "waiting_confirm":
         return handle_confirm_shift_text(event, user_id, user_message)
 
@@ -3577,6 +3709,160 @@ def ask_gemini_text(user_message, msg_type):
     return reply_text
 
 
+def get_reminder_sheet():
+    spreadsheet = get_shift_spreadsheet()
+    try:
+        sheet = spreadsheet.worksheet("提醒紀錄")
+    except gspread.WorksheetNotFound:
+        sheet = spreadsheet.add_worksheet(
+            title="提醒紀錄",
+            rows=1000,
+            cols=len(REMINDER_HEADERS)
+        )
+        sheet.append_row(REMINDER_HEADERS)
+        return sheet
+    if not sheet.get_all_values():
+        sheet.append_row(REMINDER_HEADERS)
+    return sheet
+
+
+def get_today_shift_rows():
+    spreadsheet = get_shift_spreadsheet()
+    sheet = spreadsheet.worksheet("排班表")
+    rows = get_records_by_header(sheet, "LINE_ID")
+    today = parse_date(today_text())
+    matches = []
+    for row in rows:
+        status = str(row.get("狀態", "啟用")).strip()
+        start_date = parse_date(row.get("開始日期", ""))
+        end_date = parse_date(row.get("結束日期", ""))
+        user_id = str(row.get("LINE_ID", "")).strip()
+        if (
+            user_id
+            and start_date
+            and end_date
+            and start_date <= today <= end_date
+            and (not status or status in ["啟用", "active", "Active", "ACTIVE"])
+        ):
+            matches.append(row)
+    return matches
+
+
+def get_today_confirmed_ids():
+    spreadsheet = get_shift_spreadsheet()
+    sheet = spreadsheet.worksheet("確認紀錄")
+    rows = get_records_by_header(sheet, "LINE_ID")
+    return {
+        str(row.get("LINE_ID", "")).strip()
+        for row in rows
+        if (
+            normalize_date_text(row.get("日期", "")) == today_text()
+            and str(row.get("確認狀態", "已確認")).strip() == "已確認"
+        )
+    }
+
+
+def get_today_material_reported_ids():
+    spreadsheet = get_shift_spreadsheet()
+    sheet = spreadsheet.worksheet("餘料回報")
+    rows = get_records_by_header(sheet, "LINE_ID")
+    reported_ids = {
+        str(row.get("LINE_ID", "")).strip()
+        for row in rows
+        if normalize_date_text(row.get("日期", "")) == today_text()
+    }
+    try:
+        completion_sheet = spreadsheet.worksheet("餘料完成紀錄")
+        completion_rows = get_records_by_header(completion_sheet, "LINE_ID")
+        reported_ids.update(
+            str(row.get("LINE_ID", "")).strip()
+            for row in completion_rows
+            if normalize_date_text(row.get("日期", "")) == today_text()
+        )
+    except gspread.WorksheetNotFound:
+        pass
+    return reported_ids
+
+
+def get_sent_reminder_keys():
+    sheet = get_reminder_sheet()
+    rows = get_records_by_header(sheet, "LINE_ID")
+    return {
+        (
+            normalize_date_text(row.get("日期", "")),
+            str(row.get("LINE_ID", "")).strip(),
+            str(row.get("提醒類型", "")).strip()
+        )
+        for row in rows
+        if str(row.get("發送結果", "")).strip() == "成功"
+    }
+
+
+def log_reminder(user_id, reminder_type, result, error_message=""):
+    sheet = get_reminder_sheet()
+    sheet.append_row([
+        today_text(),
+        user_id,
+        reminder_type,
+        now_time_text(),
+        result,
+        str(error_message)[:300]
+    ])
+
+
+def send_reminders(reminder_type):
+    shift_rows = get_today_shift_rows()
+    sent_keys = get_sent_reminder_keys()
+    if reminder_type == "未確認檔期":
+        excluded_ids = get_today_confirmed_ids()
+        candidates = {
+            str(row.get("LINE_ID", "")).strip()
+            for row in shift_rows
+        } - excluded_ids
+        message = "⏰ 提醒：您今日尚未完成檔期確認，請記得點選「✅ 確認檔期」。"
+    elif reminder_type == "最後一天餘料":
+        excluded_ids = get_today_material_reported_ids()
+        candidates = {
+            str(row.get("LINE_ID", "")).strip()
+            for row in shift_rows
+            if normalize_date_text(row.get("結束日期", "")) == today_text()
+        } - excluded_ids
+        message = "📦 提醒：今日為檔期最後一天，請記得完成餘料回報！"
+    else:
+        raise ValueError(f"不支援的提醒類型：{reminder_type}")
+
+    result = {"candidates": len(candidates), "sent": 0, "skipped": 0, "failed": 0}
+    for user_id in sorted(candidates):
+        if not user_id:
+            continue
+        key = (today_text(), user_id, reminder_type)
+        if key in sent_keys:
+            result["skipped"] += 1
+            continue
+        try:
+            push_message(user_id, message)
+            log_reminder(user_id, reminder_type, "成功")
+            result["sent"] += 1
+        except Exception as e:
+            print(f"[ERROR] {reminder_type}推播失敗 {user_id}:", e)
+            log_reminder(user_id, reminder_type, "失敗", e)
+            result["failed"] += 1
+    return result
+
+
+def run_scheduled_reminders(job):
+    if job == "unconfirmed":
+        return {"unconfirmed": send_reminders("未確認檔期")}
+    if job == "materials":
+        return {"materials": send_reminders("最後一天餘料")}
+    if job == "all":
+        return {
+            "unconfirmed": send_reminders("未確認檔期"),
+            "materials": send_reminders("最後一天餘料")
+        }
+    raise ValueError("job 必須是 unconfirmed、materials 或 all")
+
+
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers.get("X-Line-Signature")
@@ -3588,6 +3874,22 @@ def callback():
     handler.handle(body, signature)
 
     return "OK"
+
+
+@app.route("/run-reminders", methods=["GET", "POST"])
+def run_reminders_route():
+    request_key = request.args.get("key", "")
+    job = request.args.get("job", "all").strip().lower()
+    if not REMINDER_API_KEY or request_key != REMINDER_API_KEY:
+        return "Forbidden", 403
+    try:
+        result = run_scheduled_reminders(job)
+        return json.dumps(result, ensure_ascii=False), 200, {
+            "Content-Type": "application/json; charset=utf-8"
+        }
+    except Exception as e:
+        print("[ERROR] 執行提醒失敗:", e)
+        return f"提醒執行失敗：{e}", 500
 
 
 @app.route("/setup-richmenu", methods=["GET"])
@@ -4022,25 +4324,25 @@ def handle_postback(event):
         return
 
     if data == "action=report_cups":
-        if not require_shift_confirmed(event, user_id):
+        if not require_report_access(event, user_id):
             return
         start_cup_report_flow(event, user_id)
         return
 
     if data == "action=report_mileage":
-        if not require_shift_confirmed(event, user_id):
+        if not require_report_access(event, user_id):
             return
         start_mileage_report_flow(event, user_id)
         return
 
     if data == "action=report_expense":
-        if not require_shift_confirmed(event, user_id):
+        if not require_report_access(event, user_id):
             return
         start_expense_report_flow(event, user_id)
         return
 
     if data == "action=report_materials":
-        if not require_shift_confirmed(event, user_id):
+        if not require_report_access(event, user_id):
             return
         start_material_report_flow(event, user_id)
         return
