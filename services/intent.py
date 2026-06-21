@@ -1,7 +1,7 @@
 import re
 
-EXPENSE_KEYWORDS = ["??", "??", "??", "??", "??", "?", "??", "$"]
-CUP_KEYWORDS = ["?", "??", "??", "??", "??"]
+EXPENSE_KEYWORDS = ["支出", "花費", "花了", "買了", "付了", "元", "塊錢", "$"]
+CUP_KEYWORDS = ["杯", "賣了", "賣出", "銷售", "杯數"]
 
 
 def detect_report_intent(message, material_aliases):
