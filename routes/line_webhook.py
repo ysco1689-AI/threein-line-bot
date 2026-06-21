@@ -362,61 +362,64 @@ def _handle_message(event):
         reply_to_line(event, "已取消目前操作，請重新選擇功能。")
         return
 
-    if handle_active_flow(event, user_id, user_message):
-        return
-
     if text_command in ["✅ 確認檔期", "確認檔期", "✅確認", "✅ 確認"]:
         start_confirm_shift_flow(event, user_id)
         return
     if text_command in ["杯數回報", "杯數"]:
+        reset_report_state(user_id)
         if not require_report_access(event, user_id):
             return
-        reset_report_state(user_id)
         start_cup_report_flow(event, user_id)
         return
     if text_command in ["費用支出", "支出", "記帳", "費用"]:
+        reset_report_state(user_id)
         if not require_report_access(event, user_id):
             return
-        reset_report_state(user_id)
         start_expense_report_flow(event, user_id)
         return
     if text_command in ["里程回報", "里程"]:
+        reset_report_state(user_id)
         if not require_report_access(event, user_id):
             return
-        reset_report_state(user_id)
         start_mileage_report_flow(event, user_id)
         return
     if text_command in ["餘料回報", "餘料"]:
+        reset_report_state(user_id)
         if not require_report_access(event, user_id):
             return
-        reset_report_state(user_id)
         start_material_report_flow(event, user_id)
         return
     if text_command in ["事件紀錄", "事件"]:
+        reset_report_state(user_id)
         if not require_report_access(event, user_id):
             return
-        reset_report_state(user_id)
         start_event_flow(event, user_id)
-        return
-
-    if handle_material_template_recovery(event, user_id, user_message):
         return
 
     intent_type, _matched_material = detect_report_intent(user_message, MATERIAL_ALIASES)
     if intent_type == "expense":
+        reset_report_state(user_id)
         if not require_report_access(event, user_id):
             return
         start_expense_from_intent(event, user_id, user_message)
         return
     if intent_type == "cup":
+        reset_report_state(user_id)
         if not require_report_access(event, user_id):
             return
         start_cup_from_intent(event, user_id, user_message)
         return
     if intent_type == "material":
+        reset_report_state(user_id)
         if not require_report_access(event, user_id):
             return
         start_material_from_intent(event, user_id, user_message)
+        return
+
+    if handle_active_flow(event, user_id, user_message):
+        return
+
+    if handle_material_template_recovery(event, user_id, user_message):
         return
 
     msg_type = classify_message(user_message)
