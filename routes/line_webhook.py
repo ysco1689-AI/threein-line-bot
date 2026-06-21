@@ -30,6 +30,16 @@ def extract_first_positive_int(message):
     return int(match.group(0)) if match else None
 
 
+def reset_report_state(user_id, keep_confirmed=True):
+    state = app_state.user_states.get(user_id, {})
+    confirmed = {
+        key: state.get(key)
+        for key in ["shift_confirmed", "confirmed_date", "data"]
+        if key in state
+    }
+    app_state.user_states[user_id] = confirmed if keep_confirmed else {}
+
+
 def start_expense_from_intent(event, user_id, user_message):
     shift = get_confirmed_shift(user_id)
     if not shift:
@@ -269,30 +279,35 @@ def _handle_postback(event):
     if data == "action=report_event":
         if not require_report_access(event, user_id):
             return
+        reset_report_state(user_id)
         start_event_flow(event, user_id)
         return
 
     if data == "action=report_cups":
         if not require_report_access(event, user_id):
             return
+        reset_report_state(user_id)
         start_cup_report_flow(event, user_id)
         return
 
     if data == "action=report_mileage":
         if not require_report_access(event, user_id):
             return
+        reset_report_state(user_id)
         start_mileage_report_flow(event, user_id)
         return
 
     if data == "action=report_expense":
         if not require_report_access(event, user_id):
             return
+        reset_report_state(user_id)
         start_expense_report_flow(event, user_id)
         return
 
     if data == "action=report_materials":
         if not require_report_access(event, user_id):
             return
+        reset_report_state(user_id)
         start_material_report_flow(event, user_id)
         return
 
@@ -341,36 +356,46 @@ def _handle_message(event):
         reply_to_line(event, "此帳號目前無法使用本系統，請洽總部。")
         return
 
+    text_command = user_message.strip()
+    if text_command in ["取消", "重置", "退出", "清除狀態", "/reset"]:
+        reset_report_state(user_id)
+        reply_to_line(event, "已取消目前操作，請重新選擇功能。")
+        return
+
     if handle_active_flow(event, user_id, user_message):
         return
 
-    text_command = user_message.strip()
     if text_command in ["✅ 確認檔期", "確認檔期", "✅確認", "✅ 確認"]:
         start_confirm_shift_flow(event, user_id)
         return
     if text_command in ["杯數回報", "杯數"]:
         if not require_report_access(event, user_id):
             return
+        reset_report_state(user_id)
         start_cup_report_flow(event, user_id)
         return
     if text_command in ["費用支出", "支出", "記帳", "費用"]:
         if not require_report_access(event, user_id):
             return
+        reset_report_state(user_id)
         start_expense_report_flow(event, user_id)
         return
     if text_command in ["里程回報", "里程"]:
         if not require_report_access(event, user_id):
             return
+        reset_report_state(user_id)
         start_mileage_report_flow(event, user_id)
         return
     if text_command in ["餘料回報", "餘料"]:
         if not require_report_access(event, user_id):
             return
+        reset_report_state(user_id)
         start_material_report_flow(event, user_id)
         return
     if text_command in ["事件紀錄", "事件"]:
         if not require_report_access(event, user_id):
             return
+        reset_report_state(user_id)
         start_event_flow(event, user_id)
         return
 
