@@ -362,6 +362,11 @@ def _handle_message(event):
         reply_to_line(event, "已取消目前操作，請重新選擇功能。")
         return
 
+    current_state = app_state.user_states.get(user_id, {})
+    if current_state.get("flow") == "confirm_shift":
+        if handle_active_flow(event, user_id, user_message):
+            return
+
     if text_command in ["✅ 確認檔期", "確認檔期", "✅確認", "✅ 確認"]:
         start_confirm_shift_flow(event, user_id)
         return
