@@ -1,7 +1,7 @@
 import json
 import sys
 
-from app import run_scheduled_reminders
+from routes.admin import run_scheduled_reminders
 
 
 def main():
