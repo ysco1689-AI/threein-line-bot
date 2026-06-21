@@ -70,7 +70,7 @@ def start_expense_report_flow(event, user_id):
         return
 
     state = app_state.user_states.get(user_id, {})
-    app_state.update({
+    state.update({
         "flow": "report_expense",
         "step": "waiting_expense_date",
         "data": shift,
@@ -87,7 +87,7 @@ def start_expense_report_flow(event, user_id):
 
 def reset_expense_entry(user_id, keep_date=True):
     state = app_state.user_states.get(user_id, {})
-    expense_report = app_state.get("expense_report", {})
+    expense_report = state.get("expense_report", {})
     report_date = expense_report.get("date") if keep_date else None
     state["expense_report"] = {}
     if report_date:
@@ -97,9 +97,9 @@ def reset_expense_entry(user_id, keep_date=True):
 
 def finish_expense_flow(user_id):
     state = app_state.user_states.get(user_id, {})
-    app_state.pop("flow", None)
-    app_state.pop("step", None)
-    app_state.pop("expense_report", None)
+    state.pop("flow", None)
+    state.pop("step", None)
+    state.pop("expense_report", None)
     app_state.user_states[user_id] = state
 
 def parse_expense_amount(value):
@@ -181,8 +181,8 @@ def show_expense_summary(event, expense_report):
     )
 
 def save_expense_and_continue(event, user_id, state):
-    shift = app_state.get("data", {})
-    expense_report = app_state.get("expense_report", {})
+    shift = state.get("data", {})
+    expense_report = state.get("expense_report", {})
     try:
         review_status = write_expense_record(user_id, shift, expense_report)
     except Exception as e:
@@ -205,8 +205,8 @@ def save_expense_and_continue(event, user_id, state):
 
 def handle_expense_report_text(event, user_id, user_message):
     state = app_state.user_states.get(user_id, {})
-    step = app_state.get("step")
-    shift = app_state.get("data", {})
+    step = state.get("step")
+    shift = state.get("data", {})
     expense_report = app_state.setdefault("expense_report", {})
     message = user_message.strip()
 
@@ -360,7 +360,7 @@ def handle_expense_report_text(event, user_id, user_message):
         state["step"] = "checking_expense_duplicate"
         app_state.user_states[user_id] = state
 
-    if app_state.get("step") == "checking_expense_duplicate":
+    if state.get("step") == "checking_expense_duplicate":
         try:
             duplicates = find_duplicate_expenses(
                 user_id,
@@ -445,7 +445,7 @@ def handle_expense_photo_result(event, user_id, image_path, message_id):
     expense_report = app_state.setdefault("expense_report", {})
     expense_report["has_receipt"] = True
     expense_report["photo_message_id"] = message_id
-    shift = app_state.get("data", {})
+    shift = state.get("data", {})
     try:
         drive_file = upload_photo_to_drive(
             image_path,

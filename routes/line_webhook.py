@@ -128,13 +128,13 @@ def callback():
 def handle_image_message(event):
     user_id = event.source.user_id
     state = app_state.user_states.get(user_id, {})
-    if app_state.get("flow") == "report_mileage":
+    if state.get("flow") == "report_mileage":
         reply_to_line(event, "里程回報請直接輸入儀表板公里數，不需要上傳照片。")
         return
 
     if (
-        app_state.get("flow") == "report_cups"
-        and app_state.get("step") != "waiting_cup_photo"
+        state.get("flow") == "report_cups"
+        and state.get("step") != "waiting_cup_photo"
     ):
         reply_to_line(
             event,
@@ -143,8 +143,8 @@ def handle_image_message(event):
         return
 
     if (
-        app_state.get("flow") == "report_expense"
-        and app_state.get("step") != "waiting_expense_photo"
+        state.get("flow") == "report_expense"
+        and state.get("step") != "waiting_expense_photo"
     ):
         reply_to_line(
             event,
@@ -153,8 +153,8 @@ def handle_image_message(event):
         return
 
     if (
-        app_state.get("flow") == "report_event"
-        and app_state.get("step") != "waiting_event_photo"
+        state.get("flow") == "report_event"
+        and state.get("step") != "waiting_event_photo"
     ):
         reply_to_line(
             event,
@@ -174,15 +174,15 @@ def handle_image_message(event):
             temp_file.write(image_content)
             image_path = temp_file.name
 
-        if app_state.get("flow") == "report_cups":
+        if state.get("flow") == "report_cups":
             handle_cup_photo_result(event, user_id, image_path, message_id)
             return
 
-        if app_state.get("flow") == "report_expense":
+        if state.get("flow") == "report_expense":
             handle_expense_photo_result(event, user_id, image_path, message_id)
             return
 
-        if app_state.get("flow") == "report_event":
+        if state.get("flow") == "report_event":
             handle_event_photo_result(event, user_id, image_path, message_id)
             return
 

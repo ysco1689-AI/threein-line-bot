@@ -129,14 +129,14 @@ def get_event_records(user_id, status_filter="全部"):
 
 def finish_event_flow(user_id):
     state = app_state.user_states.get(user_id, {})
-    app_state.pop("flow", None)
-    app_state.pop("step", None)
-    app_state.pop("event_report", None)
+    state.pop("flow", None)
+    state.pop("step", None)
+    state.pop("event_report", None)
     app_state.user_states[user_id] = state
 
 def start_event_flow(event, user_id):
     state = app_state.user_states.get(user_id, {})
-    app_state.update({
+    state.update({
         "flow": "report_event",
         "step": "waiting_event_action",
         "event_report": {}
@@ -149,7 +149,7 @@ def start_event_flow(event, user_id):
     )
 
 def submit_event_record(event, user_id, state):
-    event_report = app_state.get("event_report", {})
+    event_report = state.get("event_report", {})
     try:
         write_event_record(user_id, event_report)
     except Exception as e:
@@ -192,7 +192,7 @@ def show_event_history(event, user_id, status_filter):
 
 def handle_event_report_text(event, user_id, user_message):
     state = app_state.user_states.get(user_id, {})
-    step = app_state.get("step")
+    step = state.get("step")
     event_report = app_state.setdefault("event_report", {})
     message = user_message.strip()
 

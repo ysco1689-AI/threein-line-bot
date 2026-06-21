@@ -123,7 +123,7 @@ def start_mileage_report_flow(event, user_id):
     )
     if missing_plate_record:
         state = app_state.user_states.get(user_id, {})
-        app_state.update({
+        state.update({
             "flow": "report_mileage",
             "step": "waiting_existing_plate_last_four",
             "data": shift,
@@ -150,7 +150,7 @@ def start_mileage_report_flow(event, user_id):
 
         summary = "\n".join(summary_lines) if summary_lines else "目前紀錄：沒有開車"
         state = app_state.user_states.get(user_id, {})
-        app_state.update({
+        state.update({
             "flow": "report_mileage",
             "step": "waiting_mileage_action",
             "data": shift,
@@ -165,7 +165,7 @@ def start_mileage_report_flow(event, user_id):
         return
 
     state = app_state.user_states.get(user_id, {})
-    app_state.update({
+    state.update({
         "flow": "report_mileage",
         "step": "waiting_drive_status",
         "data": shift,
@@ -180,9 +180,9 @@ def start_mileage_report_flow(event, user_id):
 
 def finish_mileage_flow(user_id):
     state = app_state.user_states.get(user_id, {})
-    app_state.pop("flow", None)
-    app_state.pop("step", None)
-    app_state.pop("mileage_report", None)
+    state.pop("flow", None)
+    state.pop("step", None)
+    state.pop("mileage_report", None)
     app_state.user_states[user_id] = state
 
 def parse_mileage_number(value):
@@ -237,8 +237,8 @@ def format_mileage_number(value):
 
 def handle_mileage_report_text(event, user_id, user_message):
     state = app_state.user_states.get(user_id, {})
-    step = app_state.get("step")
-    shift = app_state.get("data", {})
+    step = state.get("step")
+    shift = state.get("data", {})
     mileage_report = app_state.setdefault("mileage_report", {})
     message = user_message.strip()
 

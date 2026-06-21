@@ -148,8 +148,8 @@ def mark_shift_confirmed(user_id, shift):
 def check_shift_confirmed(user_id):
     state = app_state.user_states.get(user_id, {})
     if (
-        app_state.get("shift_confirmed") is True
-        and app_state.get("confirmed_date") == today_text()
+        state.get("shift_confirmed") is True
+        and state.get("confirmed_date") == today_text()
     ):
         return True
 
@@ -181,7 +181,7 @@ def require_shift_confirmed(event, user_id):
 
 def get_confirmed_shift(user_id):
     state = app_state.user_states.get(user_id, {})
-    shift = app_state.get("data")
+    shift = state.get("data")
     if shift:
         return shift
 
@@ -193,7 +193,7 @@ def get_confirmed_shift(user_id):
 
 def handle_confirm_shift_text(event, user_id, user_message):
     state = app_state.user_states.get(user_id, {})
-    shift = app_state.get("data", {})
+    shift = state.get("data", {})
     message = user_message.strip()
 
     if message in ["✅ 確認", "確認"]:

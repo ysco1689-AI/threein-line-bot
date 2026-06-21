@@ -567,7 +567,7 @@ def start_material_report_flow(event, user_id):
         return
 
     state = app_state.user_states.get(user_id, {})
-    app_state.update({
+    state.update({
         "flow": "report_materials",
         "step": (
             "waiting_material_message"
@@ -607,10 +607,10 @@ def start_material_report_flow(event, user_id):
 
 def finish_material_flow(user_id):
     state = app_state.user_states.get(user_id, {})
-    app_state.pop("flow", None)
-    app_state.pop("step", None)
-    app_state.pop("material_settings", None)
-    app_state.pop("material_pending", None)
+    state.pop("flow", None)
+    state.pop("step", None)
+    state.pop("material_settings", None)
+    state.pop("material_pending", None)
     app_state.user_states[user_id] = state
 
 def write_material_completion(user_id, shift):
@@ -648,11 +648,11 @@ def write_material_completion(user_id, shift):
 
 def handle_material_report_text(event, user_id, user_message):
     state = app_state.user_states.get(user_id, {})
-    step = app_state.get("step")
-    shift = app_state.get("data", {})
+    step = state.get("step")
+    shift = state.get("data", {})
     try:
         settings = (
-            app_state.get("material_settings")
+            state.get("material_settings")
             or load_material_settings()
         )
     except Exception as e:
@@ -843,7 +843,7 @@ def handle_material_report_text(event, user_id, user_message):
             )
             return True
 
-        pending = app_state.get("material_pending", {})
+        pending = state.get("material_pending", {})
         setting = pending.get("setting")
         quantity = pending.get("quantity")
         try:

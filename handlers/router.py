@@ -12,37 +12,37 @@ from services.messaging import reply_to_line
 
 def handle_active_flow(event, user_id, user_message):
     state = app_state.user_states.get(user_id)
-    if not state or not app_state.get("flow"):
+    if not state or not state.get("flow"):
         return False
 
-    if app_state.get("flow") in [
+    if state.get("flow") in [
         "report_cups",
         "report_mileage",
         "report_expense",
         "report_materials"
     ]:
-        shift = app_state.get("data", {})
+        shift = state.get("data", {})
         if shift and not check_shift_deadline(shift):
             app_state.user_states.pop(user_id, None)
             reply_to_line(event, "此檔期已關閉，如需修改請聯絡主管。")
             return True
 
-    if app_state.get("flow") == "confirm_shift" and app_state.get("step") == "waiting_confirm":
+    if state.get("flow") == "confirm_shift" and state.get("step") == "waiting_confirm":
         return handle_confirm_shift_text(event, user_id, user_message)
 
-    if app_state.get("flow") == "report_cups":
+    if state.get("flow") == "report_cups":
         return handle_cup_report_text(event, user_id, user_message)
 
-    if app_state.get("flow") == "report_mileage":
+    if state.get("flow") == "report_mileage":
         return handle_mileage_report_text(event, user_id, user_message)
 
-    if app_state.get("flow") == "report_expense":
+    if state.get("flow") == "report_expense":
         return handle_expense_report_text(event, user_id, user_message)
 
-    if app_state.get("flow") == "report_materials":
+    if state.get("flow") == "report_materials":
         return handle_material_report_text(event, user_id, user_message)
 
-    if app_state.get("flow") == "report_event":
+    if state.get("flow") == "report_event":
         return handle_event_report_text(event, user_id, user_message)
 
     return False
@@ -90,7 +90,7 @@ def handle_material_template_recovery(event, user_id, user_message):
 
     if initials:
         state = app_state.user_states.get(user_id, {})
-        app_state.update({
+        state.update({
             "flow": "report_materials",
             "step": "waiting_material_message",
             "data": shift,
@@ -107,7 +107,7 @@ def handle_material_template_recovery(event, user_id, user_message):
         return True
 
     state = app_state.user_states.get(user_id, {})
-    app_state.update({
+    state.update({
         "flow": "report_materials",
         "step": "waiting_material_initial",
         "data": shift,
