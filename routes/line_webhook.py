@@ -1,6 +1,7 @@
 import os
 import re
 import tempfile
+import traceback
 
 import google.generativeai as genai
 from flask import request
@@ -235,6 +236,15 @@ def handle_video_message(event):
 
 @handler.add(PostbackEvent)
 def handle_postback(event):
+    try:
+        return _handle_postback(event)
+    except Exception as e:
+        print(f"[ERROR] handle_postback 失敗: {e}")
+        traceback.print_exc()
+        reply_to_line(event, "系統處理按鍵時發生問題，請稍後再試或聯絡主管。")
+
+
+def _handle_postback(event):
     user_id = event.source.user_id
     data = event.postback.data
 
@@ -288,6 +298,15 @@ def handle_postback(event):
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
+    try:
+        return _handle_message(event)
+    except Exception as e:
+        print(f"[ERROR] handle_message 失敗: {e}")
+        traceback.print_exc()
+        reply_to_line(event, "系統處理訊息時發生問題，請稍後再試或聯絡主管。")
+
+
+def _handle_message(event):
     user_id = event.source.user_id
     user_message = event.message.text
 

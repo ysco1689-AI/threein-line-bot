@@ -59,7 +59,7 @@ def available_cup_dates(shift):
     if not start_date or not end_date or not today:
         return []
 
-    last_available_date = min(end_date, today)
+    last_available_date = min(end_date + timedelta(days=1), today)
     if last_available_date < start_date:
         return []
 
