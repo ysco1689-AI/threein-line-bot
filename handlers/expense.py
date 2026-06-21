@@ -207,7 +207,7 @@ def handle_expense_report_text(event, user_id, user_message):
     state = app_state.user_states.get(user_id, {})
     step = state.get("step")
     shift = state.get("data", {})
-    expense_report = app_state.setdefault("expense_report", {})
+    expense_report = state.setdefault("expense_report", {})
     message = user_message.strip()
 
     if step == "waiting_expense_date":
@@ -442,7 +442,7 @@ def handle_expense_report_text(event, user_id, user_message):
 
 def handle_expense_photo_result(event, user_id, image_path, message_id):
     state = app_state.user_states.get(user_id, {})
-    expense_report = app_state.setdefault("expense_report", {})
+    expense_report = state.setdefault("expense_report", {})
     expense_report["has_receipt"] = True
     expense_report["photo_message_id"] = message_id
     shift = state.get("data", {})

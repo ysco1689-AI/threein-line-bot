@@ -323,6 +323,34 @@ def handle_message(event):
     if handle_active_flow(event, user_id, user_message):
         return
 
+    text_command = user_message.strip()
+    if text_command in ["✅ 確認檔期", "確認檔期", "✅確認", "✅ 確認"]:
+        start_confirm_shift_flow(event, user_id)
+        return
+    if text_command in ["杯數回報", "杯數"]:
+        if not require_report_access(event, user_id):
+            return
+        start_cup_report_flow(event, user_id)
+        return
+    if text_command in ["費用支出", "支出", "記帳", "費用"]:
+        if not require_report_access(event, user_id):
+            return
+        start_expense_report_flow(event, user_id)
+        return
+    if text_command in ["里程回報", "里程"]:
+        if not require_report_access(event, user_id):
+            return
+        start_mileage_report_flow(event, user_id)
+        return
+    if text_command in ["餘料回報", "餘料"]:
+        if not require_report_access(event, user_id):
+            return
+        start_material_report_flow(event, user_id)
+        return
+    if text_command in ["事件紀錄", "事件"]:
+        start_event_flow(event, user_id)
+        return
+
     if handle_material_template_recovery(event, user_id, user_message):
         return
 

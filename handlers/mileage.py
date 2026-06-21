@@ -239,7 +239,7 @@ def handle_mileage_report_text(event, user_id, user_message):
     state = app_state.user_states.get(user_id, {})
     step = state.get("step")
     shift = state.get("data", {})
-    mileage_report = app_state.setdefault("mileage_report", {})
+    mileage_report = state.setdefault("mileage_report", {})
     message = user_message.strip()
 
     if step == "waiting_mileage_action":

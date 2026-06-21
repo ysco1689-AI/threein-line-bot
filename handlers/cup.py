@@ -192,7 +192,7 @@ def finish_cup_flow(user_id):
 
 def submit_cup_value(event, user_id, state, cups):
     shift = state.get("data", {})
-    cup_report = app_state.setdefault("cup_report", {})
+    cup_report = state.setdefault("cup_report", {})
     report_date = cup_report.get("date")
     photo_message_id = cup_report.get("photo_message_id", "")
     photo_drive_url = cup_report.get("photo_drive_url", "")
@@ -254,7 +254,7 @@ def handle_cup_report_text(event, user_id, user_message):
     state = app_state.user_states.get(user_id, {})
     step = state.get("step")
     shift = state.get("data", {})
-    cup_report = app_state.setdefault("cup_report", {})
+    cup_report = state.setdefault("cup_report", {})
     message = user_message.strip()
 
     if step == "waiting_cup_date":
@@ -366,7 +366,7 @@ def handle_cup_report_text(event, user_id, user_message):
 
 def handle_cup_photo_result(event, user_id, image_path, message_id):
     state = app_state.user_states.get(user_id, {})
-    cup_report = app_state.setdefault("cup_report", {})
+    cup_report = state.setdefault("cup_report", {})
     cup_report["photo_message_id"] = message_id
     shift = state.get("data", {})
     try:

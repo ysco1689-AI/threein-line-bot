@@ -193,7 +193,7 @@ def show_event_history(event, user_id, status_filter):
 def handle_event_report_text(event, user_id, user_message):
     state = app_state.user_states.get(user_id, {})
     step = state.get("step")
-    event_report = app_state.setdefault("event_report", {})
+    event_report = state.setdefault("event_report", {})
     message = user_message.strip()
 
     if message in ["取消事件", "取消", "退出"]:
@@ -291,7 +291,7 @@ def handle_event_report_text(event, user_id, user_message):
 
 def handle_event_photo_result(event, user_id, image_path, message_id):
     state = app_state.user_states.get(user_id, {})
-    event_report = app_state.setdefault("event_report", {})
+    event_report = state.setdefault("event_report", {})
     event_report["photo_message_id"] = message_id
     context = get_event_context(user_id)
     try:
