@@ -40,6 +40,15 @@ def reset_report_state(user_id, keep_confirmed=True):
     app_state.user_states[user_id] = confirmed if keep_confirmed else {}
 
 
+def parse_payment_method_from_text(message):
+    text = str(message or "")
+    if "零用金" in text:
+        return "A 零用金支付", ""
+    if "私人" in text or "自付" in text:
+        return "B 私人支付", ""
+    return "", ""
+
+
 def start_expense_from_intent(event, user_id, user_message):
     shift = get_confirmed_shift(user_id)
     if not shift:
@@ -54,23 +63,32 @@ def start_expense_from_intent(event, user_id, user_message):
         return
 
     amount = extract_first_positive_int(user_message)
-    description = re.sub(r"(NTD|NT|\$|元|塊錢|支出|花費|花了|買了|付了)", "", user_message, flags=re.IGNORECASE)
+    payment_method, payment_note = parse_payment_method_from_text(user_message)
+    description = re.sub(
+        r"(NTD|NT|\$|元|塊錢|支出|花費|花了|買了|付了|零用金|私人支付|私人|自付)",
+        "",
+        user_message,
+        flags=re.IGNORECASE
+    )
     description = re.sub(r"\d+(?:\.\d{1,2})?", "", description).strip() or "支出"
     app_state.user_states[user_id] = {
         "flow": "report_expense",
-        "step": "waiting_no_receipt_reason" if amount else "waiting_expense_amount",
+        "step": "waiting_receipt_choice" if amount else "waiting_expense_amount",
         "data": shift,
         "expense_report": {
             "date": selected_date,
             "description": description[:100],
             "amount": amount,
-            "has_receipt": False
+            "payment_method": payment_method,
+            "payment_note": payment_note
         }
     }
     if amount:
+        payment_text = f"\n付款方式：{payment_method}" if payment_method else ""
         reply_to_line(
             event,
-            f"已帶入支出：{description[:100]} / NT${amount}\n請輸入沒有收據或憑證的原因。"
+            f"已帶入支出：{description[:100]} / NT${amount}{payment_text}\n"
+            "這筆有收據或憑證嗎？請回覆「有」或「無」。"
         )
     else:
         reply_to_line(event, f"已帶入支出說明：{description[:100]}\n請輸入支出金額。")

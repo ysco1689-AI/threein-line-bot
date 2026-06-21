@@ -117,6 +117,12 @@ def format_expense_amount(value):
         return str(int(value))
     return f"{value:.2f}".rstrip("0").rstrip(".")
 
+def move_expense_after_no_receipt_reason(state, expense_report):
+    if expense_report.get("payment_method"):
+        state["step"] = "checking_expense_duplicate"
+    else:
+        state["step"] = "waiting_payment_method"
+
 def find_duplicate_expenses(user_id, report_date, amount):
     spreadsheet = get_shift_spreadsheet()
     sheet = spreadsheet.worksheet("費用支出")
@@ -291,6 +297,34 @@ def handle_expense_report_text(event, user_id, user_message):
             reply_to_line(event, "請輸入沒有收據或憑證的原因。")
         return True
 
+    if step == "waiting_receipt_choice":
+        if message in ["有", "有收據", "有憑證", "有發票"]:
+            expense_report["has_receipt"] = True
+            state["step"] = "waiting_expense_photo"
+            app_state.user_states[user_id] = state
+            reply_to_line(
+                event,
+                "請上傳收據或憑證照片。\n請讓店名、品項與總金額清楚入鏡。"
+            )
+            return True
+        if message in ["無", "沒有", "沒", "無收據", "無憑證", "沒有收據", "沒有憑證"]:
+            expense_report["has_receipt"] = False
+            expense_report["no_receipt_reason"] = "無"
+            move_expense_after_no_receipt_reason(state, expense_report)
+            app_state.user_states[user_id] = state
+            if state.get("step") == "checking_expense_duplicate":
+                pass
+            else:
+                reply_to_line(
+                    event,
+                    "請選擇付款方式：",
+                    quick_reply=payment_method_quick_reply()
+                )
+                return True
+        else:
+            reply_to_line(event, "請回覆「有」或「無」。")
+            return True
+
     if step == "waiting_expense_ai_confirm":
         if message in ["✅ AI辨識正確", "AI辨識正確", "正確"]:
             state["step"] = "waiting_payment_method"
@@ -314,12 +348,23 @@ def handle_expense_report_text(event, user_id, user_message):
         return True
 
     if step == "waiting_no_receipt_reason":
-        if len(message) < 2:
+        if len(message) < 2 and message not in ["無", "沒"]:
             reply_to_line(event, "請簡短說明無憑證原因，至少 2 個字。")
             return True
-        expense_report["no_receipt_reason"] = message[:100]
-        state["step"] = "waiting_payment_method"
+        expense_report["no_receipt_reason"] = message[:100] if message else "無"
+        move_expense_after_no_receipt_reason(state, expense_report)
         app_state.user_states[user_id] = state
+        if state.get("step") == "checking_expense_duplicate":
+            pass
+        else:
+            reply_to_line(
+                event,
+                "請選擇付款方式：",
+                quick_reply=payment_method_quick_reply()
+            )
+            return True
+
+    if state.get("step") == "waiting_payment_method" and step == "waiting_no_receipt_reason":
         reply_to_line(
             event,
             "請選擇付款方式：",
