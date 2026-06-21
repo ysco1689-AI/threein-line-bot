@@ -267,6 +267,8 @@ def _handle_postback(event):
         return
 
     if data == "action=report_event":
+        if not require_report_access(event, user_id):
+            return
         start_event_flow(event, user_id)
         return
 
@@ -367,6 +369,8 @@ def _handle_message(event):
         start_material_report_flow(event, user_id)
         return
     if text_command in ["事件紀錄", "事件"]:
+        if not require_report_access(event, user_id):
+            return
         start_event_flow(event, user_id)
         return
 
